@@ -7,6 +7,10 @@ import hashlib
 import streamlit as st
 from openai import OpenAI
 from streamlit_mic_recorder import mic_recorder
+import json
+import base64
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
 
 # 인물 식별 및 설정창 모듈
 from identity_settings_addon import (
@@ -196,6 +200,116 @@ Google Calendar, 실시간 웹 검색, 주식 조회 기능은
 """
 
 
+# [명함 연락처 기능]
+CONTACT_SCOPES = ["https://www.googleapis.com/auth/contacts"]
+
+CARD_PROMPT = """
+사용자가 명함 이미지의 연락처 저장을 요청하면 save_contact 도구를 사용합니다.
+명함에 적힌 정보만 사용하고, 명함에 없는 항목은 빈 문자열로 입력합니다.
+저장 요청이 아니면 도구를 사용하지 않습니다.
+도구 결과가 failed이면 저장에 실패했다고 답합니다.
+"""
+
+CONTACT_TOOLS = [{
+    "type": "function",
+    "name": "save_contact",
+    "description": "명함에서 읽은 정보를 Google 연락처에 저장합니다.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "이름"},
+            "phone": {"type": "string", "description": "전화번호. 없으면 빈 문자열"},
+            "email": {"type": "string", "description": "이메일. 없으면 빈 문자열"},
+            "company": {"type": "string", "description": "회사명. 없으면 빈 문자열"},
+            "title": {"type": "string", "description": "직책. 없으면 빈 문자열"}
+        },
+        "required": ["name", "phone", "email", "company", "title"],
+        "additionalProperties": False
+    },
+    "strict": True
+}]
+
+
+def save_contact(name, phone, email, company, title):
+    try:
+        creds = Credentials.from_authorized_user_info(
+            json.loads(st.secrets["GOOGLE_TOKEN"]),
+            CONTACT_SCOPES
+        )
+        service = build("people", "v1", credentials=creds)
+
+        contact = {"names": [{"givenName": name}]}
+        if phone:
+            contact["phoneNumbers"] = [{"value": phone}]
+        if email:
+            contact["emailAddresses"] = [{"value": email}]
+        if company or title:
+            contact["organizations"] = [{"name": company, "title": title}]
+
+        service.people().createContact(body=contact).execute()
+        return {"status": "success"}
+    except Exception as e:
+        return {"status": "failed", "error": str(e)}
+
+
+def create_answer(client, conversation, image):
+    st.session_state.contact_results = []
+
+    # 명함이 없으면 기존과 동일하게 답변
+    if image is None:
+        response = client.responses.create(
+            model="gpt-4o-mini",
+            input=conversation
+        )
+        return response.output_text.strip()
+
+    # 1단계: 질문 + 명함 이미지 + 도구 정의 전달
+    encoded = base64.b64encode(image.getvalue()).decode("utf-8")
+    response = client.responses.create(
+        model="gpt-4o-mini",
+        input=conversation[:-1] + [
+            {"role": "system", "content": CARD_PROMPT},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": conversation[-1]["content"]},
+                    {"type": "input_image", "image_url": f"data:{image.type};base64,{encoded}"}
+                ]
+            }
+        ],
+        tools=CONTACT_TOOLS,
+        tool_choice="auto"
+    )
+
+    tool_calls = [
+        item for item in response.output
+        if item.type == "function_call"
+    ]
+
+    if not tool_calls:
+        return response.output_text.strip()
+
+    # 2단계: 모델이 요청한 tool 실행
+    tool_outputs = []
+    for item in tool_calls:
+        args = json.loads(item.arguments)
+        result = save_contact(**args)
+        st.session_state.contact_results.append((args, result))
+        tool_outputs.append({
+            "type": "function_call_output",
+            "call_id": item.call_id,
+            "output": json.dumps(result, ensure_ascii=False)
+        })
+
+    # 3단계: tool 결과를 모델에 다시 전달
+    final_response = client.responses.create(
+        model="gpt-4o-mini",
+        previous_response_id=response.id,
+        input=tool_outputs
+    )
+    return final_response.output_text.strip()
+
+
 # ==========================================
 # 6. 음성 처리 함수
 # ==========================================
@@ -323,12 +437,7 @@ def process_audio(audio_bytes, reference_text=""):
             "Thumbs Up AI가 답변을 생성하고 있습니다..."
         ):
 
-            response = client.responses.create(
-                model="gpt-4o-mini",
-                input=conversation
-            )
-
-            answer = response.output_text.strip()
+            answer = create_answer(client, conversation, st.session_state.get("card_image"))
 
         if not answer:
             answer = "답변을 생성하지 못했습니다."
@@ -645,16 +754,38 @@ with st.expander("최근 대화 기록"):
 # ==========================================
 # 13. TXT 파일 업로드
 # ==========================================
-with st.expander("📎 참고 TXT 파일 첨부 (선택)"):
+txt_col, card_col = st.columns(2)
 
-    uploaded_file = st.file_uploader(
-        "텍스트 파일",
-        type=["txt"],
-        key="txt_file"
-    )
+with txt_col:
+    with st.expander("📎 참고 TXT 파일 첨부 (선택)"):
 
-    if uploaded_file is not None:
-
-        st.success(
-            f"{uploaded_file.name} 파일이 첨부되었습니다."
+        uploaded_file = st.file_uploader(
+            "텍스트 파일",
+            type=["txt"],
+            key="txt_file"
         )
+
+        if uploaded_file is not None:
+
+            st.success(
+                f"{uploaded_file.name} 파일이 첨부되었습니다."
+            )
+
+with card_col:
+    with st.expander("🪪 명함 이미지 첨부 (선택)"):
+
+        card_image = st.file_uploader(
+            "명함 이미지",
+            type=["png", "jpg", "jpeg"],
+            key="card_image"
+        )
+
+        if card_image is not None:
+            st.image(card_image.getvalue(), width=280)
+
+for contact, result in st.session_state.get("contact_results", []):
+    if result["status"] == "success":
+        st.success("Google 연락처에 저장했습니다.")
+        st.link_button("구글 연락처로 이동", "https://contacts.google.com")
+    else:
+        st.error(f"연락처 저장 실패: {result['error']}")
