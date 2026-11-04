@@ -437,7 +437,7 @@ def process_audio(audio_bytes, reference_text=""):
             "Thumbs Up AI가 답변을 생성하고 있습니다..."
         ):
 
-            answer = create_answer(client, conversation, card_image)
+            answer = create_answer(client, conversation, st.session_state.get("card_image"))
 
         if not answer:
             answer = "답변을 생성하지 못했습니다."
