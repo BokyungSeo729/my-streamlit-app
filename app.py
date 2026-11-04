@@ -49,7 +49,10 @@ tools = [{
 # Google 연락처 저장 함수
 def save_contact(name, phone, email, company, title):
     try:
-        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+        creds = Credentials.from_authorized_user_info(
+           json.loads(st.secrets["GOOGLE_TOKEN"]),
+           SCOPES
+        )
         service = build("people", "v1", credentials=creds)
 
         contact = {"names": [{"givenName": name}]}
