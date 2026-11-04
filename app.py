@@ -160,6 +160,6 @@ if submit:
     for args, result in saved_contacts:
         if result["status"] == "success":
             st.success("Google 연락처에 저장했습니다.")
-            st.json(args)
+            st.link_button("구글 연락처로 이동", "https://contacts.google.com")
         else:
             st.error(f"연락처 저장 실패: {result['error']}")
