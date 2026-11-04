@@ -10,7 +10,6 @@ import math  # 시세 값 검증
 import os  # 환경변수에 저장된 인증정보 읽기
 import re  # 답변의 첫 줄에서 표시용 문장 추출
 import smtplib  # Gmail SMTP 연결
-import sqlite3  # 달력 일정 저장
 import urllib.error  # GitHub API 오류 처리
 import urllib.parse  # GitHub API 주소 처리
 import urllib.request  # GitHub API 호출
@@ -22,8 +21,9 @@ from uuid import uuid4  # 질문 기록 식별자
 import requests  # 날씨 API 호출
 import streamlit as st  # 웹앱 화면 구성
 import yfinance as yf  # 주식 시세 조회
-from google.oauth2.credentials import Credentials  # Google 연락처 인증
-from googleapiclient.discovery import build  # Google 연락처 API
+from google.auth.transport.requests import Request  # Google 토큰 갱신
+from google.oauth2.credentials import Credentials  # Google 연락처·캘린더 인증
+from googleapiclient.discovery import build  # Google 연락처·캘린더 API
 from openai import OpenAI, OpenAIError  # OpenAI API 호출
 
 
@@ -542,7 +542,8 @@ def preference_toggle(label, name):  # 설정 패널을 다시 열 때도 이전
 # ==============================================================================
 
 KST = timezone(timedelta(hours=9))  # 한국 시간
-DB_PATH = os.getenv("THUMBS_DB_PATH", "thumbs_calendar.db")  # 달력 SQLite 파일 위치
+GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events"  # Google 캘린더 일정 권한
+CALENDAR_ID = get_secret("GOOGLE_CALENDAR_ID") or "primary"  # 연결할 캘린더
 
 
 # 2-2. 이메일·명함 도구 (보경) ---------------------------------------------------
@@ -790,56 +791,110 @@ def answer_weather(question):  # 날씨 질문 답변
 
 
 # 2-4. 달력·일정 등록 (승우) ------------------------------------------------------
-def db():  # 달력 데이터베이스 연결
-    con = sqlite3.connect(DB_PATH, timeout=15)
-    con.row_factory = sqlite3.Row
-    con.execute("PRAGMA busy_timeout=15000")
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            day TEXT NOT NULL,
-            time TEXT,
-            description TEXT NOT NULL DEFAULT '',
-            UNIQUE(title, day, time)
-        )
-    """)
-    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS uniq_all_day ON events(title, day) WHERE time IS NULL")
-    con.commit()
-    return con
+def google_service():  # Google Calendar 연결
+    client_id = get_secret("GOOGLE_CLIENT_ID")
+    client_secret = get_secret("GOOGLE_CLIENT_SECRET")
+    refresh_token = get_secret("GOOGLE_REFRESH_TOKEN")
+    if not all((client_id, client_secret, refresh_token)):
+        raise RuntimeError("Secrets에 GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN을 설정하세요.")
+    credentials = Credentials(
+        token=None,
+        refresh_token=refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=client_id,
+        client_secret=client_secret,
+        scopes=[GOOGLE_CALENDAR_SCOPE],
+    )
+    credentials.refresh(Request())
+    return build("calendar", "v3", credentials=credentials, cache_discovery=False)
+
+
+def google_event_body(item):  # 앱의 일정을 Google 형식으로 변환
+    event_day = date.fromisoformat(item["date"])
+    title = str(item["title"]).strip()[:200]
+    if not title:
+        raise ValueError("일정 제목이 없습니다.")
+    raw_time = item.get("time")
+    body = {"summary": title, "description": str(item.get("description") or "")[:3000]}
+    if raw_time in (None, ""):  # 종일 일정
+        body["start"] = {"date": event_day.isoformat()}
+        body["end"] = {"date": (event_day + timedelta(days=1)).isoformat()}
+    else:  # 종료 시간이 없으면 1시간으로 설정
+        start_dt = datetime.combine(event_day, datetime.strptime(str(raw_time), "%H:%M").time(), tzinfo=KST)
+        body["start"] = {"dateTime": start_dt.isoformat(), "timeZone": "Asia/Seoul"}
+        body["end"] = {"dateTime": (start_dt + timedelta(hours=1)).isoformat(), "timeZone": "Asia/Seoul"}
+    return body
+
+
+def google_to_local(event):  # Google 일정을 앱 형식으로 변환
+    start = event.get("start", {})
+    if "date" in start:
+        day, event_time = start["date"], None
+    elif start.get("dateTime"):
+        start_dt = datetime.fromisoformat(start["dateTime"].replace("Z", "+00:00")).astimezone(KST)
+        day, event_time = start_dt.date().isoformat(), start_dt.strftime("%H:%M")
+    else:
+        return None
+    return {"id": event["id"], "title": event.get("summary", "(제목 없음)"), "day": day, "time": event_time, "description": event.get("description", "")}
 
 
 def list_events(day=None, month=None):  # 날짜 또는 월 기준 일정 조회
-    with db() as con:
-        if day:
-            rows = con.execute("SELECT * FROM events WHERE day=? ORDER BY time IS NULL DESC, time, id", (day,)).fetchall()
-        else:
-            rows = con.execute("SELECT * FROM events WHERE substr(day,1,7)=? ORDER BY day,time", (month,)).fetchall()
-    return [dict(row) for row in rows]
+    if day:
+        beginning = date.fromisoformat(day)
+        ending = beginning + timedelta(days=1)
+    else:
+        beginning = date.fromisoformat(month + "-01")
+        ending = (beginning.replace(day=28) + timedelta(days=4)).replace(day=1)
+    time_min = datetime.combine(beginning, datetime.min.time(), tzinfo=KST).isoformat()
+    time_max = datetime.combine(ending, datetime.min.time(), tzinfo=KST).isoformat()
+    service = google_service()
+    items, page_token = [], None
+    while True:
+        result = service.events().list(
+            calendarId=CALENDAR_ID, timeMin=time_min, timeMax=time_max,
+            singleEvents=True, orderBy="startTime", maxResults=250, pageToken=page_token,
+        ).execute()
+        items += result.get("items", [])
+        page_token = result.get("nextPageToken")
+        if not page_token:
+            break
+    events = [google_to_local(e) for e in items if e.get("id")]
+    events = [e for e in events if e and (e["day"] == day if day else e["day"].startswith(month))]
+    return sorted(events, key=lambda e: (e["day"], e["time"] or "", e["title"]))
 
 
-def save_events(events):  # 일정 저장 (중복·형식 오류는 제외)
+def save_events(events):  # Google 캘린더에 저장 (같은 날짜·시간·제목은 제외)
+    service = google_service()
     added = skipped = 0
-    with db() as con:
-        for item in events:
-            try:
-                day = date.fromisoformat(item["date"]).isoformat()
-                raw_time = item.get("time")
-                event_time = None if raw_time in (None, "") else datetime.strptime(raw_time, "%H:%M").strftime("%H:%M")
-                title = str(item["title"]).strip()[:200]
-                if not title:
-                    skipped += 1
-                    continue
-                cur = con.execute(
-                    "INSERT OR IGNORE INTO events (title, day, time, description) VALUES (?, ?, ?, ?)",
-                    (title, day, event_time, str(item.get("description") or "")[:3000]),
-                )
-                added += cur.rowcount
-                skipped += 1 - cur.rowcount
-            except (ValueError, KeyError, TypeError):
+    existing = {}
+    for item in events:
+        try:
+            day = date.fromisoformat(item["date"]).isoformat()
+            if day not in existing:
+                existing[day] = {(e["title"].strip().casefold(), e["time"]) for e in list_events(day=day)}
+            body = google_event_body(item)
+            title = body["summary"].strip().casefold()
+            when = None if "date" in body["start"] else datetime.fromisoformat(body["start"]["dateTime"]).strftime("%H:%M")
+            if (title, when) in existing[day]:
                 skipped += 1
-        con.commit()
+                continue
+            service.events().insert(calendarId=CALENDAR_ID, body=body).execute()
+            existing[day].add((title, when))
+            added += 1
+        except (ValueError, KeyError, TypeError):
+            skipped += 1
     return added, skipped
+
+
+def update_google_event(event_id, item):  # 일정 수정
+    service = google_service()
+    event = service.events().get(calendarId=CALENDAR_ID, eventId=event_id).execute()
+    event.update(google_event_body(item))
+    return service.events().update(calendarId=CALENDAR_ID, eventId=event_id, body=event).execute()
+
+
+def delete_google_event(event_id):  # 일정 삭제
+    return google_service().events().delete(calendarId=CALENDAR_ID, eventId=event_id).execute()
 
 
 def extract_schedules(content):  # 글에서 일정 추출
@@ -898,8 +953,15 @@ def calendar_dialog():  # 월별 달력과 일정 조회·수정·삭제·직접
     base = date.fromisoformat(st.session_state.calendar_month)
     selected = date.fromisoformat(st.session_state.calendar_day)
 
+    try:  # Google 캘린더에서 일정 불러오기
+        month_events = list_events(month=base.strftime("%Y-%m"))
+        day_events = list_events(day=st.session_state.calendar_day)
+    except Exception as exc:
+        st.error(f"구글 캘린더 연결 실패: {exc}")
+        return
+
     counts = {}  # 날짜별 일정 개수
-    for event in list_events(month=base.strftime("%Y-%m")):
+    for event in month_events:
         day_num = int(event["day"][-2:])
         counts[day_num] = counts.get(day_num, 0) + 1
 
@@ -933,7 +995,6 @@ def calendar_dialog():  # 월별 달력과 일정 조회·수정·삭제·직접
                     go_to(date(base.year, base.month, day_num))
 
     selected_str = st.session_state.calendar_day
-    day_events = list_events(day=selected_str)
     st.divider()
     st.markdown(f"#### 📌 {selected_str} 일정 ({len(day_events)}개)")
     if not day_events:
@@ -956,18 +1017,21 @@ def calendar_dialog():  # 월별 달력과 일정 조회·수정·삭제·직접
                     st.warning("일정 제목을 입력해 주세요.")
                 else:
                     try:
-                        with db() as con:
-                            con.execute(
-                                "UPDATE events SET title=?, day=?, time=?, description=? WHERE id=?",
-                                (new_title.strip(), new_day.isoformat(), None if all_day else new_time.strftime("%H:%M"), description, event["id"]),
-                            )
+                        update_google_event(event["id"], {
+                            "title": new_title.strip(), "date": new_day.isoformat(),
+                            "time": None if all_day else new_time.strftime("%H:%M"), "description": description,
+                        })
+                    except Exception as exc:
+                        st.error(f"Google 일정 수정 오류: {exc}")
+                    else:
                         go_to(new_day)
-                    except sqlite3.IntegrityError:
-                        st.warning("동일한 일정이 이미 있습니다.")
             if st.button("🗑 이 일정 삭제", key=f"delete_event_{event['id']}"):
-                with db() as con:
-                    con.execute("DELETE FROM events WHERE id=?", (event["id"],))
-                st.rerun(scope="fragment")
+                try:
+                    delete_google_event(event["id"])
+                except Exception as exc:
+                    st.error(f"Google 일정 삭제 오류: {exc}")
+                else:
+                    st.rerun(scope="fragment")
 
     with st.expander("➕ 선택한 날짜에 일정 직접 등록"):
         with st.form("event_new"):
@@ -981,16 +1045,20 @@ def calendar_dialog():  # 월별 달력과 일정 조회·수정·삭제·직접
             if not title.strip():
                 st.warning("일정 제목을 입력해 주세요.")
             else:
-                added, _ = save_events([{
-                    "title": title, "date": event_date.isoformat(),
-                    "time": None if is_all_day else event_time.strftime("%H:%M"), "description": description,
-                }])
-                if added:
-                    go_to(event_date)
+                try:
+                    added, _ = save_events([{
+                        "title": title, "date": event_date.isoformat(),
+                        "time": None if is_all_day else event_time.strftime("%H:%M"), "description": description,
+                    }])
+                except Exception as exc:
+                    st.error(f"Google 일정 저장 오류: {exc}")
                 else:
-                    st.warning("이미 등록된 일정이거나 날짜·시간 형식이 올바르지 않습니다.")
+                    if added:
+                        go_to(event_date)
+                    else:
+                        st.warning("이미 등록된 일정이거나 날짜·시간 형식이 올바르지 않습니다.")
 
-    st.caption("일정은 로컬 SQLite 파일에 저장됩니다. Streamlit Cloud 재배포나 재시작 시 사라질 수 있습니다.")
+    st.caption("일정은 연결된 Google 캘린더에 저장됩니다. 종료 시간을 지정하지 않으면 시작 후 1시간으로 등록됩니다.")
 
 
 # 2-5. 주식 시세 (승우) ----------------------------------------------------------
@@ -1610,6 +1678,37 @@ def propose_new_people(llm, transcript):  # 신규 인물 후보 추출 (승인 
         save_identity_state()
     st.session_state.identity_discovery_status = f"분석 완료: {len(proposed)}명 추출, {added}명 신규 후보 추가"
     return proposed
+
+
+def show_txt_person_extraction(meeting_file, meeting_text):  # 첨부한 회의록에서 신규 인물 후보 추출
+    if meeting_file is None:
+        st.session_state.pop("_txt_person_last_hash", None)  # 같은 파일을 다시 올려도 분석
+        st.caption("회의록을 첨부하면 자동으로 분석합니다.")
+        return
+    if not st.session_state.identity_enabled:
+        st.info("인물 식별 설정에서 '인물 구분 기능 사용'을 켜야 TXT 인물 추출이 가능합니다.")
+        return
+    if not st.session_state.identity_auto_discovery_enabled:
+        st.info("인물 식별 설정에서 '새 녹음에서 신규 인물 후보 자동 추출'을 켜야 합니다. TXT에도 같은 옵션이 적용됩니다.")
+        return
+    file_bytes = meeting_file.getvalue()
+    digest = hashlib.sha256(meeting_file.name.encode("utf-8") + b"\0" + file_bytes).hexdigest()
+    force_retry = st.button("🔄 이 TXT 다시 분석", key="txt_person_retry")
+    if not meeting_text.strip():
+        st.warning("분석할 수 있는 TXT 내용이 없습니다.")
+    elif client is None:
+        st.warning("OPENAI_API_KEY가 없습니다. Secrets를 확인해 주세요.")
+    elif force_retry or st.session_state.get("_txt_person_last_hash") != digest:  # 파일당 한 번만 자동 분석
+        st.session_state["_txt_person_last_hash"] = digest
+        with st.spinner("회의록에서 신규 인물을 찾고 있습니다..."):
+            propose_new_people(client, meeting_text)  # 녹음과 같은 추출·중복 제거·저장 로직 사용
+        st.session_state["_txt_person_result"] = st.session_state.identity_discovery_status
+        st.rerun()  # 화면 위쪽의 승인 안내까지 갱신
+    st.write("**최근 TXT 분석 결과:**", st.session_state.get("_txt_person_result", "아직 TXT를 분석하지 않았습니다."))
+    if st.session_state.identity_discovery_error:
+        st.error("추출 오류 유형: " + str(st.session_state.identity_discovery_error))
+    st.caption("TXT 앞부분 최대 5,000자만 분석합니다. 인물 후보는 설정 및 도구 → 인물 식별 설정 → 신규 인물 승인에서 확인하세요.")
+    st.write("승인 대기:", len(st.session_state.identity_pending), "명")
 
 
 def next_person_id(people):  # P004... 형식의 새 ID 생성
@@ -2296,6 +2395,8 @@ with main_column:  # 본문 열에 표시
                     show_reminders("departure_result", "출근 계획", "출발", DEPARTURE_ALERTS)  # 출근 카드
                 if st.session_state.get("work_end_result"):  # 퇴근 계획이 있으면
                     show_reminders("work_end_result", "퇴근 계획", "퇴근", WORK_END_ALERTS)  # 퇴근 카드
+            with st.expander("TXT 회의록 신규 인물 추출"):  # 신규 인물 후보 추출 (승인 전에는 등록하지 않음)
+                show_txt_person_extraction(meeting_file, meeting_text)  # 추출 상태 표시
             with st.expander("나의 질문"):  # 질문 기록
                 for item in st.session_state.question_history:  # 최신 질문부터
                     question = item["question"]  # 질문 원문
