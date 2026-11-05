@@ -29,7 +29,7 @@ from openai import OpenAI, OpenAIError  # OpenAI API 호출
 
 
 # 1. 페이지 및 스타일 -----------------------------------------------------------
-st.set_page_config(page_title="Thumbs Up | AI Voice Assistant", page_icon="👍", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Thumbs Up | AI Voice Assistant", page_icon="👍", layout="wide", initial_sidebar_state="collapsed")  # 기본 화면 설정
 
 st.markdown("""
 <style>
@@ -2632,7 +2632,10 @@ def handle_commute_request(question):
             f"Current Korean date and time: {now:%Y-%m-%d %H:%M}. "
             f"Pending clarification action: {pending or 'none'}."
         ),
-        input=question,
+        input=[
+            {"role": "system", "content": "Return the classification as a JSON object."},
+            {"role": "user", "content": question},
+        ],
         text={"format": {"type": "json_object"}},
     )
     try:
@@ -2856,17 +2859,22 @@ def clear_question_history():  # 질문 기록 전체 삭제
 def answer_question(question, meeting_text, card_file):  # 질문 내용에 맞는 기능으로 연결
     st.session_state.last_actions = []
     if is_commute_request(question):  # 출퇴근 시각·야근·알림 음성 명령
+        st.session_state.answer_stage = "출퇴근 요청 분석"
         answer, preview = handle_commute_request(question)
         if answer is not None:  # 출퇴근 명령으로 처리됐다면
             st.session_state.pending_preview = preview  # 알림 음성 미리듣기 전달
             return answer
     if is_schedule_request(question):  # 일정 등록
+        st.session_state.answer_stage = "일정 등록"
         return register_schedules(question, meeting_text)
     if not is_email_request(question):  # 메일 요청은 일반 답변의 발송 도구로 처리
         if is_stock_question(question):  # 주식 시세
+            st.session_state.answer_stage = "주식 조회"
             return answer_stock(question)
         if is_weather_question(question):  # 날씨·미세먼지·옷차림
+            st.session_state.answer_stage = "날씨 조회"
             return answer_weather(question, meeting_text if st.session_state.use_meeting else "")
+    st.session_state.answer_stage = "일반 답변 생성"
     normalized, reference = apply_identity(client, question, meeting_text)  # 인물 호칭 정규화
     propose_new_people(client, question)  # 신규 인물 후보 추출
     return ask_gpt(normalized, reference, card_file)  # 일반 답변·메일·명함
@@ -2964,6 +2972,7 @@ with setting_column:
                 st.session_state.last_answer = ""
                 st.session_state.last_audio = None
                 st.session_state.mail_body = ""
+                st.session_state.last_recording = ""
                 st.session_state.risk_result = ""
                 st.session_state.risk_items = []
                 st.session_state.risk_rejected = 0
@@ -3028,9 +3037,11 @@ with main_column:
 
         pending_question = None  # 이번에 처리할 질문
         started_at = time_module.time()  # 처리 시간 측정
-        if audio_value is not None:  # 녹음을 마치면 바로 처리
+        auto_submit_voice = False  # 이번 질문이 녹음으로 자동 전송됐는지 표시
+        if audio_value is not None and not typed_question:  # 녹음을 마치면 바로 처리
             recording_hash = hashlib.sha256(audio_value.getvalue()).hexdigest()
             if recording_hash != st.session_state.last_recording:  # 같은 녹음을 중복 처리하지 않음
+                auto_submit_voice = True
                 st.session_state.last_recording = recording_hash
                 if client is None:
                     show_status(status_ph, "error", "⚠️ OPENAI_API_KEY 설정이 필요합니다.")
@@ -3050,12 +3061,14 @@ with main_column:
             if client is None:
                 show_status(status_ph, "error", "⚠️ OPENAI_API_KEY 설정이 필요합니다.")
             else:
+                st.session_state.answer_stage = "답변 생성"  # 오류 안내에 표시할 현재 단계
                 try:
                     show_status(status_ph, "busy", "📝 답변을 작성하고 있어요...")
                     st.session_state.pop("pending_preview", None)
                     answer = answer_question(pending_question, meeting_text, card_file)  # 질문 내용에 맞는 기능으로 답변
                     speech_bytes = st.session_state.pop("pending_preview", None)  # 요청한 알림 음성 미리듣기
-                    st.session_state.command_audio_preview = speech_bytes is not None
+                    is_preview = speech_bytes is not None
+                    st.session_state.command_audio_preview = is_preview
                     if speech_bytes is None and answer and st.session_state.answer_mode != "텍스트만":  # 음성 답변을 쓴다면
                         try:
                             show_status(status_ph, "busy", "🔊 음성을 만들고 있어요...")
@@ -3065,7 +3078,8 @@ with main_column:
                     st.session_state.last_question = pending_question
                     st.session_state.last_answer = answer
                     st.session_state.last_audio = speech_bytes
-                    st.session_state.answer_autoplay = speech_bytes is not None  # 새 답변일 때만 자동 재생
+                    st.session_state.answer_stage = "답변 저장"
+                    st.session_state.answer_autoplay = speech_bytes is not None and (auto_submit_voice or is_preview)  # 녹음 질문과 미리듣기만 자동 재생
                     st.session_state.turns.extend([{"role": "user", "content": pending_question}, {"role": "assistant", "content": answer}])
                     st.session_state.mail_body = answer
                     st.session_state.mail_subject = "Thumbs Up AI 비서 답변"
@@ -3077,9 +3091,24 @@ with main_column:
                     elapsed = str(round(time_module.time() - started_at, 1))
                     st.session_state.status_done = "✅ 완료 (" + elapsed + "초) · 다시 질문하려면 녹음 버튼을 눌러주세요"
                     st.rerun()
-                except Exception:
+                except OpenAIError as error:  # OpenAI 오류는 원인을 구분해 안내 (응답 본문은 표시하지 않음)
                     show_status(status_ph, "error", "⚠️ 처리 중 문제가 생겼어요. 다시 시도해 주세요.")
-                    st.error("답변 생성에 실패했습니다. API 설정을 확인해 주세요.")
+                    status = getattr(error, "status_code", None)
+                    hint = {
+                        400: "모델과 요청 형식을 확인해 주세요.",
+                        401: "Streamlit Secrets의 OPENAI_API_KEY가 유효한지 확인해 주세요.",
+                        403: "API 프로젝트의 접근 권한을 확인해 주세요.",
+                        404: "API 프로젝트에서 요청한 모델에 접근할 수 있는지 확인해 주세요.",
+                        429: "OpenAI API 크레딧, 사용 한도 또는 요청 빈도를 확인해 주세요.",
+                    }.get(status, "잠시 뒤 다시 시도해 주세요.")
+                    detail = f"HTTP {status}" if isinstance(status, int) else type(error).__name__
+                    code = getattr(error, "code", None)
+                    if isinstance(code, str) and re.fullmatch(r"[a-z0-9_]{1,80}", code):
+                        detail += f" · {code}"
+                    st.error(f"{st.session_state.answer_stage} 실패 ({detail}). {hint}")
+                except Exception as error:  # 그 밖의 오류
+                    show_status(status_ph, "error", "⚠️ 처리 중 문제가 생겼어요. 다시 시도해 주세요.")
+                    st.error(f"{st.session_state.answer_stage} 중 앱 오류가 발생했습니다 ({type(error).__name__}).")
 
         with card_slot:  # 결과 카드
             if not st.session_state.last_answer:
