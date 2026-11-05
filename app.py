@@ -390,11 +390,6 @@ header[data-testid="stHeader"] { background: transparent; }
 [data-testid="stSidebar"] { background: #ffffff; border-right: 1px solid #ece8f7; }
 .tu-brand { color: #1f2033; font-size: 1.25rem; font-weight: 800; margin-top: 6px; }
 .tu-brand span { color: #8b6cf0; font-size: 0.8rem; font-weight: 500; margin-left: 8px; }
-.tu-menu-title { color: #8a86a3; font-size: 0.8rem; font-weight: 600; margin: 24px 0 10px 0; }
-.tu-menu-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border-radius: 14px; margin-bottom: 6px; color: #34344a; font-size: 0.95rem; font-weight: 500; }
-.tu-menu-item.active { background: #f1ecff; color: #5b45c4; font-weight: 700; }
-.tu-menu-item.disabled { color: #a9a6bd; }
-.tu-badge { font-size: 0.7rem; background: #f6f4fb; color: #8a86a3; border-radius: 99px; padding: 2px 9px; font-weight: 500; }
 .st-key-hero { position: fixed; right: 0; bottom: 0; width: min(46vw, 82vh); z-index: 0; pointer-events: none; margin: 0; padding: 0; }
 .st-key-hero img { display: block; width: 100%; height: auto; }
 @media (max-width: 900px) { .st-key-hero { display: none; } }
@@ -408,11 +403,11 @@ st.session_state.setdefault("show_sidebar", False)  # True로 바꾸면 처음�
 # 기본 '<<', '>>' 아이콘은 숨기고, 설정 버튼 옆의 메뉴 버튼만 사용
 CSS += '[data-testid="stExpandSidebarButton"], [data-testid="stSidebarCollapseButton"], [data-testid="stSidebarCollapsedControl"] { display: none; }\n'
 CSS += ".tu-brand { margin: 6px 0 18px 0; }\n"
-CSS += ".tu-badge { white-space: nowrap; flex: none; margin-left: 8px; }\n"
 CSS += ".tu-title { font-size: clamp(1.8rem, 3.8vw, 3.1rem); }\n"
 
 # 사이드 메뉴: 화면 폭이나 브라우저에 저장된 접힘 상태와 상관없이 본문 위에 겹쳐서 열림
 CSS += '.st-key-menu_drawer [data-testid="stHorizontalBlock"] { flex-wrap: nowrap; }\n.st-key-menu_drawer [data-testid="stColumn"] { min-width: 0 !important; }\n[class*="st-key-delete_"] button { padding: 0.35rem 0.5rem; min-height: 36px; }\n[class*="st-key-history_"] button { padding: 0.45rem 0.7rem; }\n'
+CSS += ".st-key-toggle_sidebar, .st-key-toggle_settings { position: relative; z-index: 80; }\n"  # 메뉴·설정 창이 열려도 버튼을 눌러 닫을 수 있게 위에 표시
 CSS += ".st-key-menu_drawer { position: fixed !important; top: 0; left: 0; width: min(300px, 85vw); height: 100vh; overflow-y: auto; z-index: 70; background: #ffffff; border-right: 1px solid #ece8f7; box-shadow: 12px 0 48px rgba(139, 108, 240, 0.22); padding: 26px 24px; }\n"
 
 RESULT_CSS = """
@@ -3538,23 +3533,6 @@ def section_heading(name, text):  # 설정 묶음 제목을 같은 모양으로 
 init_identity()  # 인물 식별 상태 복원
 enhance_init()  # 고급 인물 메타데이터 복원
 
-MENU_ITEMS = [  # (아이콘, 메뉴 이름, 사용 가능 여부)
-    ("🌤️", "날씨 비서", True),
-    ("📝", "회의록 분석 (요약·업무 정리)", st.session_state.use_meeting),
-    ("⚠️", "업무 리스크 점검", st.session_state.enable_risk),
-    ("✉️", "이메일 작성 및 발송", st.session_state.enable_email),
-    ("🚇", "출퇴근 도우미", True),
-    ("📅", "나의 달력", True),
-    ("📈", "주식 시세", True),
-    ("💳", "명함 저장", True),
-    ("👥", "인물 식별", st.session_state.identity_enabled),
-]
-menu_html = '<div class="tu-menu-title">기능</div>'
-for icon, menu_name, enabled in MENU_ITEMS:
-    if enabled:
-        menu_html += '<div class="tu-menu-item active"><div>' + icon + ' ' + menu_name + '</div></div>'
-    else:
-        menu_html += '<div class="tu-menu-item disabled"><div>' + icon + ' ' + menu_name + '</div><div class="tu-badge">꺼짐</div></div>'
 if st.session_state.show_sidebar:  # 메뉴 버튼을 눌렀을 때만 표시
     with st.container(key="menu_drawer"):
         st.markdown('<div class="tu-brand">나의 질문</div>', unsafe_allow_html=True)
@@ -3567,10 +3545,6 @@ if st.session_state.show_sidebar:  # 메뉴 버튼을 눌렀을 때만 표시
             st.button("🗑 전체 삭제", key="clear_history", width="stretch", on_click=clear_question_history)
         else:
             st.caption("아직 저장된 질문이 없습니다.")
-        st.markdown(menu_html, unsafe_allow_html=True)
-        if st.button("닫기 ✕", key="close_menu", width="stretch"):
-            st.session_state.show_sidebar = False
-            st.rerun()
 
 head_left, head_menu, head_right = st.columns([7, 0.6, 1.5], gap="small")  # 상단 타이틀, 메뉴 버튼, 설정 버튼
 with head_left:
@@ -3581,8 +3555,7 @@ with head_menu:
         st.session_state.show_sidebar = not st.session_state.show_sidebar
         st.rerun()
 with head_right:
-    btn_label = "닫기 ✕" if st.session_state.panel_open else "⚙️ 설정"  # 현재 패널 상태에 맞는 문구
-    if st.button(btn_label, key="toggle_settings", width="stretch"):
+    if st.button("⚙️ 설정", key="toggle_settings", width="stretch"):  # 한 번 더 누르면 닫힘
         st.session_state.panel_open = not st.session_state.panel_open
         st.rerun()
 
@@ -3592,9 +3565,6 @@ with setting_column:
     if st.session_state.panel_open:
         with st.container(border=False, key="settings_panel"):
             st.markdown('<div class="tu-panel-title">⚙️ 설정 및 도구</div>', unsafe_allow_html=True)
-            if st.button("닫기 ✕", key="close_settings", width="stretch"):  # 화면을 내리거나 좁은 화면에서 상단 버튼이 가려져도 닫을 수 있게 함
-                st.session_state.panel_open = False
-                st.rerun()
             section_heading("wave", "답변 방식")
             st.session_state.answer_mode = st.radio("답변 방식", ANSWER_MODES, index=ANSWER_MODES.index(st.session_state.answer_mode), label_visibility="collapsed")
             section_heading("user", "음성 설정 (TTS)")
