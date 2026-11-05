@@ -25,6 +25,7 @@ import urllib.request  # GitHub API 호출
 from collections import defaultdict  # 인물 호칭 색인
 from datetime import date, datetime, time, timedelta, timezone  # 일정·알림 시간 계산
 from email.message import EmailMessage  # 한글 이메일 작성
+from io import BytesIO  # 첨부 이미지 변환
 from uuid import uuid4  # 질문 기록 식별자
 
 import requests  # 날씨 API 호출
@@ -34,10 +35,11 @@ from google.auth.transport.requests import Request  # Google 토큰 갱신
 from google.oauth2.credentials import Credentials  # Google 연락처·캘린더 인증
 from googleapiclient.discovery import build  # Google 연락처·캘린더 API
 from openai import OpenAI, OpenAIError  # OpenAI API 호출
+from PIL import Image  # 첨부 이미지 크기 조정
 
 
 # 1. 페이지 및 스타일 -----------------------------------------------------------
-st.set_page_config(page_title="Thumbs Up | AI Voice Assistant", page_icon="👍", layout="wide", initial_sidebar_state="collapsed")  # 기본 화면 설정
+st.set_page_config(page_title="Thumbs Up | AI Voice Assistant", page_icon="👍", layout="wide", initial_sidebar_state="expanded")  # 기본 화면 설정
 
 st.markdown("""
 <style>
@@ -50,14 +52,6 @@ st.markdown("""
 }
 .stApp p, .stApp label, .stApp li, .stApp h1, .stApp h2, .stApp h3, .stApp h4 { color: #26293d; }
 .stApp [data-testid="stVerticalBlock"] { gap: 1rem; }
-.st-key-attachment { max-width: 340px; margin: 0 auto; }
-.st-key-attachment [data-testid="stExpander"] { background: #ffffffcc !important; border: 1px solid #e9e5f5 !important; border-radius: 24px !important; box-shadow: 0 3px 10px #3d2c6e07; }
-.st-key-attachment summary { min-height: 35px !important; padding: .35rem .85rem !important; color: #706586 !important; }
-.st-key-attachment summary p { font-size: .78rem !important; font-weight: 500; color: #706586 !important; }
-.st-key-attachment summary svg { color: #9b83de !important; }
-.st-key-attachment [data-testid="stExpanderDetails"] { padding: .3rem .7rem .7rem; }
-.document-chip { display: flex; align-items: center; justify-content: center; gap: .45rem; font-size: .76rem; color: #796498; background: #f6f1fe; border: 1px solid #ece5f8; border-radius: 24px; padding: .45rem .8rem; width: fit-content; max-width: 90%; margin: -.35rem auto .1rem; overflow-wrap: anywhere; }
-.document-chip svg { width: 15px; height: 15px; flex: 0 0 auto; }
 .st-key-typed_question { max-width: 590px; margin: -.15rem auto .3rem; }
 .stApp [data-testid="stChatInput"] { background: #ffffffed !important; border: 1px solid #eae6f4 !important; border-radius: 25px !important; box-shadow: 0 3px 14px #56407604; }
 .stApp [data-testid="stChatInput"] > div, .stApp [data-testid="stChatInput"] > div > div { background: transparent !important; border: 0 !important; border-radius: 25px !important; }
@@ -350,30 +344,54 @@ header[data-testid="stHeader"] { background: transparent; }
 .tu-placeholder { color: #bdb9d2; font-size: 1.9rem; font-weight: 500; padding-top: 6px; }
 .tu-label { color: #8a86a3; font-size: 0.85rem; font-weight: 500; margin-bottom: 8px; }
 .tu-question { color: #1f2033; font-size: 1.55rem; font-weight: 700; line-height: 1.5; }
+.tu-wait { color: #bdb9d2; font-size: 1.05rem; font-weight: 500; animation: tu-blink 1.6s ease-in-out infinite; }
+@keyframes tu-blink { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
 .tu-divider { height: 1px; background: #efebfa; margin: 22px 0 18px 0; }
 .tu-answer { color: #34344a; font-size: 1.12rem; line-height: 1.85; }
-.tu-wave { display: flex; align-items: center; gap: 0; margin: 22px 0 14px 0; height: 96px; }
-.tu-line { flex: 1; height: 4px; border-radius: 99px; animation: tu-breathe 3.2s ease-in-out infinite; }
-.tu-line.left { background: linear-gradient(90deg, rgba(168, 200, 255, 0), #a8c8ff); box-shadow: 0 6px 0 -1px rgba(168, 200, 255, 0.35); }
-.tu-line.right { background: linear-gradient(90deg, #f3a8e0, rgba(243, 168, 224, 0)); box-shadow: 0 -6px 0 -1px rgba(243, 168, 224, 0.35); animation-delay: 0.6s; }
-.tu-mic { width: 76px; height: 76px; border-radius: 50%; background: #ffffff; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 10px rgba(139, 108, 240, 0.08), 0 10px 30px rgba(139, 108, 240, 0.25); animation: tu-pulse 2.6s ease-in-out infinite; }
-@keyframes tu-breathe { 0%, 100% { opacity: 0.55; transform: scaleX(0.94); } 50% { opacity: 1; transform: scaleX(1); } }
-@keyframes tu-pulse { 0%, 100% { box-shadow: 0 0 0 8px rgba(139, 108, 240, 0.07), 0 10px 30px rgba(139, 108, 240, 0.22); } 50% { box-shadow: 0 0 0 16px rgba(139, 108, 240, 0.12), 0 10px 34px rgba(139, 108, 240, 0.32); } }
-.tu-status { margin-top: 10px; padding: 14px 18px; border-radius: 16px; text-align: center; font-size: 0.98rem; font-weight: 500; }
+.st-key-recwrap { position: relative; margin: 22px 0 6px 0; }
+.tu-wave { display: flex; align-items: center; height: 96px; gap: 18px; }
+.tu-side { flex: 1; display: flex; align-items: center; justify-content: space-between; height: 96px; }
+.tu-bar { width: 3px; height: 3px; border-radius: 99px; opacity: var(--o); }
+.tu-side.left .tu-bar { background: linear-gradient(180deg, #b9d3ff, #8fa8ff); }
+.tu-side.right .tu-bar { background: linear-gradient(180deg, #f6b4e6, #ee8fd6); }
+.tu-mic { position: relative; width: 76px; height: 76px; flex: none; border-radius: 50%; background: #ffffff; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 10px rgba(139, 108, 240, 0.08), 0 10px 30px rgba(139, 108, 240, 0.25); transition: transform 0.2s, background 0.3s; }
+.tu-micsvg { display: flex; }
+.tu-mic .tu-stop { display: none; }
+.tu-rec-txt { display: none; }
+.stApp:has([data-testid="stAudioInputActionButton"][aria-label="Record"]:hover) .tu-mic { transform: scale(1.06); }
+.stApp:has([aria-label="Stop recording"]) .tu-bar, .stApp:has(.tu-busy) .tu-bar { animation: tu-bar 1s ease-in-out infinite; animation-delay: calc(var(--i) * -0.09s); }
+.stApp:has([aria-label="Stop recording"]) .tu-mic { background: linear-gradient(135deg, #8b6cf0, #e58be0); animation: tu-pulse 1.4s ease-in-out infinite; }
+.stApp:has([aria-label="Stop recording"]) .tu-micsvg { display: none; }
+.stApp:has([aria-label="Stop recording"]) .tu-mic .tu-stop { display: flex; }
+.stApp:has([aria-label="Stop recording"]) .tu-txt { display: none; }
+.stApp:has([aria-label="Stop recording"]) .tu-rec-txt { display: inline; }
+@keyframes tu-bar { 0%, 100% { height: 3px; } 50% { height: var(--h); } }
+@keyframes tu-pulse { 0%, 100% { box-shadow: 0 0 0 8px rgba(229, 139, 224, 0.18), 0 10px 30px rgba(139, 108, 240, 0.30); } 50% { box-shadow: 0 0 0 18px rgba(229, 139, 224, 0.10), 0 10px 36px rgba(139, 108, 240, 0.40); } }
+[class*="st-key-rec_"] { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); width: 76px; height: 76px; z-index: 6; margin: 0; }
+[class*="st-key-rec_"] [data-testid="stAudioInput"] { position: relative; width: 76px; height: 76px; min-height: 0; padding: 0; margin: 0; border: none; background: transparent; opacity: 0; overflow: hidden; border-radius: 50%; }
+[class*="st-key-rec_"] [data-testid="stAudioInputActionButton"] { position: absolute; top: 0; left: 0; width: 76px; height: 76px; border-radius: 50%; cursor: pointer; }
+[class*="st-key-rec_"] [data-testid="stAudioInputActionButton"]:not([aria-label="Record"]):not([aria-label="Stop recording"]) { display: none; }
+[class*="st-key-rec_"] [data-testid="stAudioInput"] * { pointer-events: none; }
+[class*="st-key-rec_"] [data-testid="stAudioInputActionButton"] { pointer-events: auto; }
+[class*="st-key-rec_"] [data-testid="stAudioInputWaveSurfer"], [class*="st-key-rec_"] [data-testid="stAudioInputWaveformTimeCode"] { display: none; }
+.tu-status { word-break: keep-all; margin-top: 30px; padding: 14px 18px; border-radius: 16px; text-align: center; font-size: 0.98rem; font-weight: 500; }
 .tu-idle { background: #f1ecff; color: #5b45c4; }
 .tu-busy { background: #ece4ff; color: #6b52d9; }
 .tu-done { background: #fdeef8; color: #b0408f; }
 .tu-error { background: #ffe9ef; color: #c0364f; }
-[data-testid="stAudioInput"] > div, [data-testid="stAudioInput"] { border-radius: 18px; }
-[data-testid="stAudioInput"] > div { background: #f3f0fb; border: 1px solid #ebe5fa; }
 [data-testid="stFileUploader"] section { background: #f6f4fb; border: 1px dashed #d9d0f5; border-radius: 18px; }
 [data-testid="stFileUploader"] label p { color: #5b5877; font-size: 0.9rem; font-weight: 500; }
 [data-testid="stFileUploader"] button { border-radius: 12px; border: 1px solid #d9d0f5; color: #6b52d9; background: #ffffff; }
 .stButton > button { border-radius: 999px; border: 1px solid #e3dcf7; background: #ffffff; color: #6b52d9; font-weight: 600; padding: 0.55rem 1.1rem; box-shadow: 0 4px 14px rgba(139, 108, 240, 0.08); }
 .stButton > button:hover { border-color: #b9a6f5; background: #f5f1ff; color: #5b45c4; }
+
+.st-key-toggle_sidebar button { min-height: 42px; width: 100%; border-radius: 999px; border: 1px solid #e3dcf7; background: #ffffff; color: #6b52d9; font-weight: 600; padding: 0.55rem 0.6rem; box-shadow: 0 4px 14px rgba(139, 108, 240, 0.08); }
+.st-key-toggle_sidebar button:hover { border-color: #b9a6f5; background: #f5f1ff; color: #5b45c4; }
+
 .st-key-settings_panel { background: #ffffff; border: 1px solid #ece8f7; border-radius: 28px; box-shadow: 0 12px 40px rgba(139, 108, 240, 0.10); padding: 22px 24px; }
 .tu-panel-title { color: #1f2033; font-size: 1.25rem; font-weight: 800; padding-bottom: 12px; border-bottom: 1px solid #efebfa; margin-bottom: 16px; }
 .tu-panel-sec { color: #1f2033; font-size: 0.98rem; font-weight: 700; margin: 18px 0 6px 0; }
+.tu-ver { color: #b5b1c9; font-size: 0.72rem; margin-top: 28px; }
 [data-testid="stAudio"] audio { width: 100%; border-radius: 999px; background: #f5f1ff; }
 [data-testid="stSidebar"] { background: #ffffff; border-right: 1px solid #ece8f7; }
 .tu-brand { color: #1f2033; font-size: 1.25rem; font-weight: 800; margin-top: 6px; }
@@ -388,6 +406,23 @@ header[data-testid="stHeader"] { background: transparent; }
 @media (max-width: 900px) { .st-key-hero { display: none; } }
 """
 
+# ---------------------------------------------------------
+# 사이드 메뉴 열림/닫힘 (설정 버튼 옆 메뉴 버튼으로 여닫기)
+# ---------------------------------------------------------
+st.session_state.setdefault("show_sidebar", False)  # True로 바꾸면 처음부터 열려 있음
+
+# 기본 '<<', '>>' 아이콘은 숨기고, 설정 버튼 옆의 메뉴 버튼만 사용
+CSS += '[data-testid="stExpandSidebarButton"], [data-testid="stSidebarCollapseButton"], [data-testid="stSidebarCollapsedControl"] { display: none; }\n'
+CSS += ".tu-brand { margin: 6px 0 18px 0; }\n"
+CSS += ".tu-badge { white-space: nowrap; flex: none; margin-left: 8px; }\n"
+CSS += ".tu-title { font-size: clamp(1.8rem, 3.8vw, 3.1rem); }\n"
+
+if st.session_state["show_sidebar"]:
+    # 사이드 메뉴가 본문을 밀지 않고, 본문 위에 겹쳐서 열리게 함
+    CSS += '[data-testid="stSidebar"] { position: fixed !important; top: 0 !important; left: 0 !important; height: 100vh !important; box-shadow: 12px 0 48px rgba(139, 108, 240, 0.22); }\n'
+else:
+    CSS += '[data-testid="stSidebar"] { display: none; }\n'
+
 RESULT_CSS = """
 .st-key-result_card { background: #ffffff; border: 1px solid #ece8f7; border-radius: 28px; box-shadow: 0 12px 40px rgba(139, 108, 240, 0.10); padding: 34px 38px; min-height: 300px; }
 .st-key-result_card .st-key-answer_detail [data-testid="stMarkdownContainer"] p,
@@ -396,7 +431,7 @@ RESULT_CSS = """
 st.markdown("<style>" + CSS + RESULT_CSS + "</style>", unsafe_allow_html=True)
 
 TITLE_HTML = (
-    '<div class="tu-title">Thumbs Up,<br>'
+    '<div class="tu-title">Thumbs Up👍,<br>'
     'Your <span class="tu-accent">professional</span> AI Voice Assistant</div>'
     '<div class="tu-sub">당신만의 AI Voice Assistant ThumbsUp입니다.</div>'
 )
@@ -409,17 +444,66 @@ MIC_SVG = (
     '<line x1="12" y1="18" x2="12" y2="22"></line></svg>'
 )
 
-WAVE_HTML = (
-    '<div class="tu-wave"><div class="tu-line left"></div>'
-    '<div class="tu-mic">' + MIC_SVG + '</div>'
-    '<div class="tu-line right"></div></div>'
+STOP_SVG = (
+    '<svg width="28" height="28" viewBox="0 0 24 24">'
+    '<rect x="5" y="5" width="14" height="14" rx="3" fill="#ffffff"></rect></svg>'
 )
+
+
+def build_bars(side, n=30):
+    """파형 막대 생성. 원에 가까울수록 높고, 안쪽에서 바깥쪽으로 물결이 퍼짐"""
+    bars = ""
+    for p in range(n):
+        # 왼쪽은 바깥→안쪽, 오른쪽은 안쪽→바깥 순서로 배치
+        near = p / (n - 1) if side == "left" else 1 - p / (n - 1)
+        dist = n - 1 - p if side == "left" else p
+        shift = 0 if side == "left" else 1.3
+        wobble = 0.55 + 0.45 * abs(math.sin(dist * 1.7 + shift))
+        height = int(6 + 44 * (near ** 1.4) * wobble)
+        opacity = round(0.25 + 0.75 * near, 2)
+        bars += (
+            '<span class="tu-bar" style="--h:' + str(height) + 'px;--o:' + str(opacity)
+            + ';--i:' + str(dist) + '"></span>'
+        )
+    return '<div class="tu-side ' + side + '">' + bars + '</div>'
+
+
+WAVE_HTML = (
+    '<div class="tu-wave">' + build_bars("left")
+    + '<div class="tu-mic"><span class="tu-micsvg">' + MIC_SVG + '</span>'
+    + '<span class="tu-stop">' + STOP_SVG + '</span></div>'
+    + build_bars("right") + '</div>'
+)
+
+
+def build_card_html(question=None, answer=None, mode="음성 + 텍스트", listening=False):
+    """결과 카드 HTML. 질문/답변이 아직 없으면 대기 문구를 보여줌"""
+    if question is None and not listening:
+        return '<div class="tu-card"><div class="tu-placeholder">행복한 하루 되세요!</div></div>'
+
+    card = '<div class="tu-card"><div class="tu-label">🎤 내 말 · 음성 인식 결과</div>'
+    if question is None:
+        card += '<div class="tu-wait">질문을 듣고 있어요...</div>'
+    else:
+        card += '<div class="tu-question">' + html.escape(question) + '</div>'
+        if mode != "음성만":
+            card += '<div class="tu-divider"></div><div class="tu-label">Thumbs Up의 답변</div>'
+            if answer is None:
+                card += '<div class="tu-wait">답변을 준비하고 있어요...</div>'
+            else:
+                card += '<div class="tu-answer">' + html.escape(answer).replace("\n", "<br>") + '</div>'
+    card += '</div>'
+    return card
 
 
 def show_status(placeholder, kind, text):
     """하단 안내 배너 갱신 (kind: idle / busy / done / error)"""
+    inner = '<span class="tu-txt">' + html.escape(text) + '</span>'
+    if kind in ("idle", "done"):
+        # 녹음 중일 때만 보이는 문구 (CSS가 자동으로 전환)
+        inner += '<span class="tu-rec-txt">🔴 녹음 중이에요. 다시 누르면 끝나요</span>'
     placeholder.markdown(
-        '<div class="tu-status tu-' + kind + '">' + html.escape(text) + '</div>',
+        '<div class="tu-status tu-' + kind + '">' + inner + '</div>',
         unsafe_allow_html=True,
     )
 
@@ -487,7 +571,9 @@ initial_state = {  # 앱 화면과 대화에 필요한 상태 초기값
     "status_done": "",  # 처리 완료 후 상태 배너 문구
     "command_audio_preview": False,  # 알림 음성 미리듣기 여부
     "last_actions": [],  # 최근 메일·연락처 도구 실행 결과
-    "card_count": 0,  # 명함 저장 후 업로더를 비우기 위한 번호
+    "memo_n": 0,  # 새 대화·명함 저장 후 업로더를 비우기 위한 번호
+    "active_feature": None,  # 방금 질문이 사용한 기능 (commute / meeting)
+    "last_error": "",  # 직전 처리 오류 안내
     "question_history": [],  # 나의 질문 기록
     "selected_id": None,  # 선택한 질문 기록
     "calendar_month": datetime.now(timezone(timedelta(hours=9))).date().replace(day=1).isoformat(),  # 달력에 표시할 달
@@ -1123,7 +1209,7 @@ def ask_gpt(question, meeting_text, card_file=None):  # 기존 미션 3의 GPT �
             outcome = save_contact(**args)  # 저장 실행
             st.session_state.last_actions.append(("contact", args["name"], outcome))  # 실제 결과 기록
             if outcome["status"] == "success":  # 저장에 성공하면
-                st.session_state.card_count += 1  # 명함 업로더 비우기
+                st.session_state.memo_n += 1  # 업로더 비우기
         tool_outputs.append({"type": "function_call_output", "call_id": item.call_id, "output": json.dumps(outcome, ensure_ascii=False)})  # 결과 전달 준비
     final = client.responses.create(model="gpt-4o-mini", previous_response_id=result.id, input=tool_outputs)  # 결과를 모델에 전달
     return final.output_text  # 최종 답변 반환
@@ -1433,7 +1519,20 @@ def build_weather_summary(place, weather, air):  # LLM에 전달할 날씨 데�
 """
 
 
-def answer_weather(question, memo=""):  # 날씨 질문 답변
+def prepare_image(uploaded_file):
+    """업로드한 jpg/png를 최대 1024px, JPEG로 줄여서 반환. 실패하면 None"""
+    try:
+        img = Image.open(BytesIO(uploaded_file.getvalue()))
+        img = img.convert("RGB")
+        img.thumbnail((1024, 1024))
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        return {"bytes": buf.getvalue(), "mime": "image/jpeg"}
+    except Exception:
+        return None
+
+
+def answer_weather(question, memo="", image=None):  # 날씨 질문 답변
     location = extract_location(question)
     if not location["korean"]:
         return "지역을 알아듣지 못했어요. 어느 지역의 날씨가 궁금한지 다시 말씀해 주세요."
@@ -1444,9 +1543,14 @@ def answer_weather(question, memo=""):  # 날씨 질문 답변
     prompt = f"[사용자의 질문]\n{question}\n\n[조회된 날씨 데이터]\n{summary}"
     if memo:  # 첨부한 TXT가 있으면 참고 자료로 함께 전달
         prompt += "\n\n[첨부 메모]\n" + memo[:3000] + "\n(첨부 메모는 참고용입니다. 오늘 날씨와 관련된 일정이 있을 때만 준비물에 반영하세요.)"
+    content = [{"type": "input_text", "text": prompt}]
+    if image is not None:  # 첨부한 이미지가 있으면 함께 전달
+        content[0]["text"] += "\n\n[첨부 이미지]가 함께 전달되었습니다. 질문이나 오늘 날씨와 관련 있을 때만 참고하세요."
+        encoded = base64.b64encode(image["bytes"]).decode("utf-8")
+        content.append({"type": "input_image", "image_url": "data:" + image["mime"] + ";base64," + encoded})
     result = client.with_options(timeout=30.0, max_retries=1).responses.create(model="gpt-4o-mini", input=[
         {"role": "system", "content": WEATHER_ROLE},
-        {"role": "user", "content": prompt},
+        {"role": "user", "content": content},
     ])
     return result.output_text
 
@@ -1597,6 +1701,8 @@ def is_schedule_request(question):  # 일정 등록 명령인지 확인
 
 def register_schedules(question, meeting_text):  # 회의록 또는 말한 내용의 일정을 달력에 등록
     use_file = bool(meeting_text.strip()) and bool(re.search(r"첨부|파일|문서|회의록|텍스트|TXT|전부|모두", question, re.I))
+    if use_file:  # 첨부 회의록에서 일정을 찾는 경우
+        st.session_state.active_feature = "meeting"
     events = extract_schedules(meeting_text if use_file else question)
     added, skipped = save_events(events)
     lines = [f"일정 {len(events)}개를 분석했습니다. {added}개 등록했고 {skipped}개는 중복 또는 형식 오류로 제외했습니다."]
@@ -2341,9 +2447,23 @@ def propose_new_people(llm, transcript):  # 신규 인물 후보 추출 (승인 
     return proposed
 
 
-def show_txt_person_extraction(meeting_file, meeting_text):  # 첨부한 회의록에서 신규 인물 후보 추출
+def auto_extract_txt_people(meeting_file, meeting_text):  # 첨부한 회의록에서 신규 인물 후보를 파일당 한 번 자동 추출
     if meeting_file is None:
         st.session_state.pop("_txt_person_last_hash", None)  # 같은 파일을 다시 올려도 분석
+        return
+    if not (st.session_state.identity_enabled and st.session_state.identity_auto_discovery_enabled and meeting_text.strip() and client is not None):
+        return
+    digest = hashlib.sha256(meeting_file.name.encode("utf-8") + b"\0" + meeting_file.getvalue()).hexdigest()
+    if st.session_state.get("_txt_person_last_hash") != digest:
+        st.session_state["_txt_person_last_hash"] = digest
+        with st.spinner("회의록에서 신규 인물을 찾고 있습니다..."):
+            propose_new_people(client, meeting_text)  # 녹음과 같은 추출·중복 제거·저장 로직 사용
+        st.session_state["_txt_person_result"] = st.session_state.identity_discovery_status
+        st.rerun()  # 화면 위쪽의 승인 안내까지 갱신
+
+
+def show_txt_person_extraction(meeting_file, meeting_text):  # 회의록 신규 인물 추출 상태 표시
+    if meeting_file is None:
         st.caption("회의록을 첨부하면 자동으로 분석합니다.")
         return
     if not st.session_state.identity_enabled:
@@ -2352,19 +2472,13 @@ def show_txt_person_extraction(meeting_file, meeting_text):  # 첨부한 회의�
     if not st.session_state.identity_auto_discovery_enabled:
         st.info("인물 식별 설정에서 '새 녹음에서 신규 인물 후보 자동 추출'을 켜야 합니다. TXT에도 같은 옵션이 적용됩니다.")
         return
-    file_bytes = meeting_file.getvalue()
-    digest = hashlib.sha256(meeting_file.name.encode("utf-8") + b"\0" + file_bytes).hexdigest()
-    force_retry = st.button("🔄 이 TXT 다시 분석", key="txt_person_retry")
+    if st.button("🔄 이 TXT 다시 분석", key="txt_person_retry"):
+        st.session_state.pop("_txt_person_last_hash", None)  # 다음 실행에서 다시 분석
+        st.rerun()
     if not meeting_text.strip():
         st.warning("분석할 수 있는 TXT 내용이 없습니다.")
     elif client is None:
         st.warning("OPENAI_API_KEY가 없습니다. Secrets를 확인해 주세요.")
-    elif force_retry or st.session_state.get("_txt_person_last_hash") != digest:  # 파일당 한 번만 자동 분석
-        st.session_state["_txt_person_last_hash"] = digest
-        with st.spinner("회의록에서 신규 인물을 찾고 있습니다..."):
-            propose_new_people(client, meeting_text)  # 녹음과 같은 추출·중복 제거·저장 로직 사용
-        st.session_state["_txt_person_result"] = st.session_state.identity_discovery_status
-        st.rerun()  # 화면 위쪽의 승인 안내까지 갱신
     st.write("**최근 TXT 분석 결과:**", st.session_state.get("_txt_person_result", "아직 TXT를 분석하지 않았습니다."))
     if st.session_state.identity_discovery_error:
         st.error("추출 오류 유형: " + str(st.session_state.identity_discovery_error))
@@ -3323,11 +3437,14 @@ def clear_question_history():  # 질문 기록 전체 삭제
 # 2-9. 질문 분류 --------------------------------------------------------------
 def answer_question(question, meeting_text, card_file):  # 질문 내용에 맞는 기능으로 연결
     st.session_state.last_actions = []
+    st.session_state.active_feature = None  # 다음 질문이 다른 기능을 쓰면 메뉴를 다시 숨김
+    uses_meeting = bool(meeting_text) and st.session_state.use_meeting  # 첨부 회의록 활용 여부
     if is_commute_request(question):  # 출퇴근 시각·야근·알림 음성 명령
         st.session_state.answer_stage = "출퇴근 요청 분석"
         answer, preview = handle_commute_request(question)
         if answer is not None:  # 출퇴근 명령으로 처리됐다면
             st.session_state.pending_preview = preview  # 알림 음성 미리듣기 전달
+            st.session_state.active_feature = "commute"
             return answer
     if is_schedule_request(question):  # 일정 등록
         st.session_state.answer_stage = "일정 등록"
@@ -3338,8 +3455,13 @@ def answer_question(question, meeting_text, card_file):  # 질문 내용에 맞�
             return answer_stock(question)
         if is_weather_question(question):  # 날씨·미세먼지·옷차림
             st.session_state.answer_stage = "날씨 조회"
-            return answer_weather(question, meeting_text if st.session_state.use_meeting else "")
+            if uses_meeting:
+                st.session_state.active_feature = "meeting"
+            image = prepare_image(card_file) if card_file is not None else None  # 첨부 이미지 참고
+            return answer_weather(question, meeting_text if st.session_state.use_meeting else "", image)
     st.session_state.answer_stage = "일반 답변 생성"
+    if uses_meeting:
+        st.session_state.active_feature = "meeting"
     enhance_observe(question, st.session_state.identity_people, source="STT/질문")  # 별명·이름 오인식 후보 제안
     question = enhance_apply_verified(question, st.session_state.identity_people)  # 승인된 정정 규칙 반영
     normalized, reference = apply_identity(client, question, meeting_text)  # 인물 호칭 정규화
@@ -3385,8 +3507,7 @@ MENU_ITEMS = [  # (아이콘, 메뉴 이름, 사용 가능 여부)
     ("💳", "명함 저장", True),
     ("👥", "인물 식별", st.session_state.identity_enabled),
 ]
-menu_html = '<div class="tu-brand">Thumbs Up<span>Voice AI Assistant</span></div>'
-menu_html += '<div class="tu-menu-title">기능</div>'
+menu_html = '<div class="tu-brand">나의 질문</div>'
 for icon, menu_name, enabled in MENU_ITEMS:
     if enabled:
         menu_html += '<div class="tu-menu-item active"><div>' + icon + ' ' + menu_name + '</div></div>'
@@ -3395,11 +3516,16 @@ for icon, menu_name, enabled in MENU_ITEMS:
 with st.sidebar:
     st.markdown(menu_html, unsafe_allow_html=True)
 
-head_left, head_right = st.columns([5, 1])  # 상단 타이틀과 설정 버튼
+head_left, head_menu, head_right = st.columns([7, 0.6, 1.5], gap="small")  # 상단 타이틀, 메뉴 버튼, 설정 버튼
 with head_left:
     st.markdown(TITLE_HTML, unsafe_allow_html=True)
+with head_menu:
+    menu_icon = ":material/menu_open:" if st.session_state.show_sidebar else ":material/menu:"
+    if st.button("", key="toggle_sidebar", icon=menu_icon, help="사이드 메뉴 열기/닫기", width="stretch"):
+        st.session_state.show_sidebar = not st.session_state.show_sidebar
+        st.rerun()
 with head_right:
-    btn_label = "설정 닫기 ✕" if st.session_state.panel_open else "⚙️ 설정"  # 현재 패널 상태에 맞는 문구
+    btn_label = "닫기 ✕" if st.session_state.panel_open else "⚙️ 설정"  # 현재 패널 상태에 맞는 문구
     if st.button(btn_label, key="toggle_settings", width="stretch"):
         st.session_state.panel_open = not st.session_state.panel_open
         st.rerun()
@@ -3456,6 +3582,9 @@ with setting_column:
                 st.session_state.followup_notice = ""
                 st.session_state.status_done = ""
                 st.session_state.last_actions = []
+                st.session_state.active_feature = None
+                st.session_state.last_error = ""
+                st.session_state.memo_n += 1
                 st.session_state.recorder_count += 1
                 st.rerun()
             st.caption("설정은 현재 브라우저 세션에서 유지됩니다.")
@@ -3472,20 +3601,25 @@ with main_column:
     with st.container(key="workspace"):
         if st.session_state.pop("voice_overtime_effect", False):  # 음성으로 야근을 확정했다면
             show_overtime_effect()
-        card_slot = st.container()  # 결과 카드 자리 (처리 후 아래에서 채움)
-        st.markdown(WAVE_HTML, unsafe_allow_html=True)
+        card_ph = st.empty()  # 결과 카드 자리 (처리 후 아래에서 채움)
 
-        mic_col, up_col = st.columns([1.15, 1], gap="medium")
-        with mic_col:
-            audio_value = st.audio_input("질문 녹음", key=f"mic_input_{st.session_state.recorder_count}", label_visibility="collapsed")
+        # 큰 마이크 버튼 = 실제 녹음 버튼 (기본 녹음창을 투명하게 겹쳐 둠)
+        with st.container(key="recwrap"):
+            st.markdown(WAVE_HTML, unsafe_allow_html=True)
+            audio_value = st.audio_input("질문 녹음", key=f"rec_{st.session_state.recorder_count}", label_visibility="collapsed")
+
+        status_col, up_col = st.columns([1.15, 1], gap="medium")
+        with status_col:
             status_ph = st.empty()
+            error_ph = st.empty()
         with up_col:
-            meeting_file = st.file_uploader("파일 업로드", type=["txt"], key="meeting_file")
+            uploaded_file = st.file_uploader("파일 업로드", type=["txt", "jpg", "jpeg", "png"], key=f"memo_{st.session_state.memo_n}")
+            is_txt = uploaded_file is not None and uploaded_file.name.lower().endswith(".txt")
+            meeting_file = uploaded_file if is_txt else None  # TXT는 회의록·메모로 사용
+            image_file = uploaded_file if uploaded_file is not None and not is_txt else None  # 이미지는 날씨 참고·명함 저장에 사용
             schedule_clicked = st.button("회의록 일정을 달력에 등록", width="stretch", key="register_txt") if meeting_file is not None else False
-            with st.container(key="attachment"):
-                with st.expander("명함 첨부 · 이미지", expanded=False):
-                    card_file = st.file_uploader("명함 이미지", type=["png", "jpg", "jpeg"], key=f"card_file_{st.session_state.card_count}", label_visibility="collapsed")
-                    st.caption("첨부 후 '이 명함을 연락처에 저장해 줘'라고 말해 주세요.")
+            if image_file is not None:
+                st.caption("명함이라면 '이 명함을 연락처에 저장해 줘'라고 말해 주세요.")
         typed_question = st.chat_input("또는 글자로 질문해 주세요", key="typed_question")  # 마이크 없이도 질문 가능
 
         meeting_text = to_text(meeting_file) if meeting_file is not None else ""  # 문서 내용 읽기
@@ -3502,17 +3636,30 @@ with main_column:
             st.session_state.risk_analyzed = False
             st.session_state.followup_notice = ""
             st.session_state.turns = []  # 다른 문서의 대화가 섞이지 않게 초기화
-        if card_file is not None:  # 명함을 첨부했다면
-            st.markdown(f'<div class="document-chip">{ui_icon("file")}<span>{html.escape(card_file.name)}</span></div>', unsafe_allow_html=True)
+        auto_extract_txt_people(meeting_file, meeting_text)  # 메뉴가 숨겨져 있어도 첨부한 회의록은 자동 분석
         if st.session_state.identity_pending:  # 승인 대기 인물이 있다면
             st.info(f"🆕 신규 인물 후보 {len(st.session_state.identity_pending)}명 발견! 설정 및 도구 → 인물 식별 설정 → 신규 인물 승인에서 확인하세요.")
 
-        if st.session_state.status_done:  # 방금 처리를 마쳤다면
+        if st.session_state.last_error:  # 직전 처리에 실패했다면
+            show_status(status_ph, "error", "⚠️ 처리 중 문제가 생겼어요. 다시 질문해 주세요.")
+            error_ph.error(st.session_state.last_error)
+        elif st.session_state.status_done:  # 방금 처리를 마쳤다면
             show_status(status_ph, "done", st.session_state.status_done)
         elif st.session_state.last_answer:
-            show_status(status_ph, "done", "다시 질문하려면 녹음 버튼을 눌러주세요")
+            show_status(status_ph, "done", "다시 질문하려면 마이크 버튼을 눌러주세요")
         else:
-            show_status(status_ph, "idle", "녹음 버튼을 눌러 질문해주세요")
+            show_status(status_ph, "idle", "마이크 버튼을 눌러 질문해주세요")
+
+        def fail_question(message, question=None):  # 실패 내용을 남기고 큰 마이크를 다시 녹음 대기 상태로 복구
+            st.session_state.last_error = message
+            st.session_state.status_done = ""
+            if question:  # 질문은 인식됐지만 이후 단계에서 실패한 경우
+                st.session_state.last_question = question
+                st.session_state.last_answer = "답변을 만들지 못했어요. 다시 한 번 말씀해 주세요."
+                st.session_state.last_audio = None
+                st.session_state.last_actions = []
+            st.session_state.recorder_count += 1
+            st.rerun()
 
         pending_question = None  # 이번에 처리할 질문
         started_at = time_module.time()  # 처리 시간 측정
@@ -3522,76 +3669,80 @@ with main_column:
             if recording_hash != st.session_state.last_recording:  # 같은 녹음을 중복 처리하지 않음
                 auto_submit_voice = True
                 st.session_state.last_recording = recording_hash
+                st.session_state.last_error = ""
+                error_ph.empty()
+                card_ph.markdown(build_card_html(listening=True), unsafe_allow_html=True)  # 질문 인식 전 '듣고 있어요' 표시
                 if client is None:
-                    show_status(status_ph, "error", "⚠️ OPENAI_API_KEY 설정이 필요합니다.")
-                else:
-                    try:
-                        show_status(status_ph, "busy", "🎧 질문을 듣고 있어요...")
-                        transcript = client.audio.transcriptions.create(model="whisper-1", file=("question.wav", audio_value.getvalue(), "audio/wav"), language="ko")
-                        pending_question = transcript.text.strip()
-                    except Exception:
-                        show_status(status_ph, "error", "⚠️ 음성 인식에 실패했습니다. API 설정을 확인해 주세요.")
+                    fail_question("OPENAI_API_KEY 설정이 필요합니다.")
+                try:
+                    show_status(status_ph, "busy", "⏳ 잠시만 기다려 주세요...")
+                    transcript = client.audio.transcriptions.create(model="whisper-1", file=("question.wav", audio_value.getvalue(), "audio/wav"), language="ko")
+                    pending_question = transcript.text.strip()
+                except Exception:
+                    fail_question("음성 인식에 실패했습니다. API 설정을 확인해 주세요.")
+                if not pending_question:
+                    fail_question("음성을 인식하지 못했습니다. 다시 말씀해 주세요.")
         if not pending_question and typed_question:  # 글자 질문을 제출했다면
             pending_question = typed_question.strip()
         elif not pending_question and schedule_clicked:  # 회의록 일정 등록 버튼을 눌렀다면
             pending_question = "첨부한 회의록의 일정을 달력에 등록해 줘"
 
         if pending_question:  # 유효한 질문이 있다면
+            st.session_state.last_error = ""
+            error_ph.empty()
             if client is None:
-                show_status(status_ph, "error", "⚠️ OPENAI_API_KEY 설정이 필요합니다.")
-            else:
-                st.session_state.answer_stage = "답변 생성"  # 오류 안내에 표시할 현재 단계
-                try:
-                    show_status(status_ph, "busy", "📝 답변을 작성하고 있어요...")
-                    st.session_state.pop("pending_preview", None)
-                    answer = answer_question(pending_question, meeting_text, card_file)  # 질문 내용에 맞는 기능으로 답변
-                    speech_bytes = st.session_state.pop("pending_preview", None)  # 요청한 알림 음성 미리듣기
-                    is_preview = speech_bytes is not None
-                    st.session_state.command_audio_preview = is_preview
-                    if speech_bytes is None and answer and st.session_state.answer_mode != "텍스트만":  # 음성 답변을 쓴다면
-                        try:
-                            show_status(status_ph, "busy", "🔊 음성을 만들고 있어요...")
-                            speech_bytes = text_to_speech(answer)
-                        except Exception:  # 음성 변환만 실패했다면
-                            st.warning("텍스트 답변은 준비됐지만 음성 생성에 실패했습니다.")
-                    st.session_state.last_question = pending_question
-                    st.session_state.last_answer = answer
-                    st.session_state.last_audio = speech_bytes
-                    st.session_state.answer_stage = "답변 저장"
-                    st.session_state.answer_autoplay = speech_bytes is not None and (auto_submit_voice or is_preview)  # 녹음 질문과 미리듣기만 자동 재생
-                    st.session_state.turns.extend([{"role": "user", "content": pending_question}, {"role": "assistant", "content": answer}])
-                    st.session_state.mail_body = answer
-                    st.session_state.mail_subject = "Thumbs Up AI 비서 답변"
-                    history_id = str(uuid4())
-                    st.session_state.question_history.insert(0, {"id": history_id, "question": pending_question, "answer": answer, "audio": speech_bytes})
-                    st.session_state.question_history = st.session_state.question_history[:30]
-                    st.session_state.selected_id = history_id
-                    st.session_state.recorder_count += 1
-                    elapsed = str(round(time_module.time() - started_at, 1))
-                    st.session_state.status_done = "✅ 완료 (" + elapsed + "초) · 다시 질문하려면 녹음 버튼을 눌러주세요"
-                    st.rerun()
-                except OpenAIError as error:  # OpenAI 오류는 원인을 구분해 안내 (응답 본문은 표시하지 않음)
-                    show_status(status_ph, "error", "⚠️ 처리 중 문제가 생겼어요. 다시 시도해 주세요.")
-                    status = getattr(error, "status_code", None)
-                    hint = {
-                        400: "모델과 요청 형식을 확인해 주세요.",
-                        401: "Streamlit Secrets의 OPENAI_API_KEY가 유효한지 확인해 주세요.",
-                        403: "API 프로젝트의 접근 권한을 확인해 주세요.",
-                        404: "API 프로젝트에서 요청한 모델에 접근할 수 있는지 확인해 주세요.",
-                        429: "OpenAI API 크레딧, 사용 한도 또는 요청 빈도를 확인해 주세요.",
-                    }.get(status, "잠시 뒤 다시 시도해 주세요.")
-                    detail = f"HTTP {status}" if isinstance(status, int) else type(error).__name__
-                    code = getattr(error, "code", None)
-                    if isinstance(code, str) and re.fullmatch(r"[a-z0-9_]{1,80}", code):
-                        detail += f" · {code}"
-                    st.error(f"{st.session_state.answer_stage} 실패 ({detail}). {hint}")
-                except Exception as error:  # 그 밖의 오류
-                    show_status(status_ph, "error", "⚠️ 처리 중 문제가 생겼어요. 다시 시도해 주세요.")
-                    st.error(f"{st.session_state.answer_stage} 중 앱 오류가 발생했습니다 ({type(error).__name__}).")
+                fail_question("OPENAI_API_KEY 설정이 필요합니다.")
+            card_ph.markdown(build_card_html(question=pending_question, mode=st.session_state.answer_mode), unsafe_allow_html=True)  # 인식한 질문을 바로 표시
+            st.session_state.answer_stage = "답변 생성"  # 오류 안내에 표시할 현재 단계
+            try:
+                show_status(status_ph, "busy", "📝 답변을 작성하고 있어요...")
+                st.session_state.pop("pending_preview", None)
+                answer = answer_question(pending_question, meeting_text, image_file)  # 질문 내용에 맞는 기능으로 답변
+                speech_bytes = st.session_state.pop("pending_preview", None)  # 요청한 알림 음성 미리듣기
+                is_preview = speech_bytes is not None
+                st.session_state.command_audio_preview = is_preview
+                if speech_bytes is None and answer and st.session_state.answer_mode != "텍스트만":  # 음성 답변을 쓴다면
+                    try:
+                        show_status(status_ph, "busy", "🔊 음성을 만들고 있어요...")
+                        speech_bytes = text_to_speech(answer)
+                    except Exception:  # 음성 변환만 실패했다면
+                        st.warning("텍스트 답변은 준비됐지만 음성 생성에 실패했습니다.")
+                st.session_state.last_question = pending_question
+                st.session_state.last_answer = answer
+                st.session_state.last_audio = speech_bytes
+                st.session_state.answer_stage = "답변 저장"
+                st.session_state.answer_autoplay = speech_bytes is not None and (auto_submit_voice or is_preview)  # 녹음 질문과 미리듣기만 자동 재생
+                st.session_state.turns.extend([{"role": "user", "content": pending_question}, {"role": "assistant", "content": answer}])
+                st.session_state.mail_body = answer
+                st.session_state.mail_subject = "Thumbs Up AI 비서 답변"
+                history_id = str(uuid4())
+                st.session_state.question_history.insert(0, {"id": history_id, "question": pending_question, "answer": answer, "audio": speech_bytes})
+                st.session_state.question_history = st.session_state.question_history[:30]
+                st.session_state.selected_id = history_id
+                st.session_state.recorder_count += 1
+                elapsed = str(round(time_module.time() - started_at, 1))
+                st.session_state.status_done = "✅ 완료 (" + elapsed + "초) · 다시 질문하려면 마이크 버튼을 눌러주세요"
+            except OpenAIError as error:  # OpenAI 오류는 원인을 구분해 안내 (응답 본문은 표시하지 않음)
+                status = getattr(error, "status_code", None)
+                hint = {
+                    400: "모델과 요청 형식을 확인해 주세요.",
+                    401: "Streamlit Secrets의 OPENAI_API_KEY가 유효한지 확인해 주세요.",
+                    403: "API 프로젝트의 접근 권한을 확인해 주세요.",
+                    404: "API 프로젝트에서 요청한 모델에 접근할 수 있는지 확인해 주세요.",
+                    429: "OpenAI API 크레딧, 사용 한도 또는 요청 빈도를 확인해 주세요.",
+                }.get(status, "잠시 뒤 다시 시도해 주세요.")
+                detail = f"HTTP {status}" if isinstance(status, int) else type(error).__name__
+                code = getattr(error, "code", None)
+                if isinstance(code, str) and re.fullmatch(r"[a-z0-9_]{1,80}", code):
+                    detail += f" · {code}"
+                fail_question(f"{st.session_state.answer_stage} 실패 ({detail}). {hint}", pending_question)
+            except Exception as error:  # 그 밖의 오류
+                fail_question(f"{st.session_state.answer_stage} 중 앱 오류가 발생했습니다 ({type(error).__name__}).", pending_question)
+            st.rerun()
 
-        with card_slot:  # 결과 카드
+        with card_ph.container():  # 결과 카드
             if not st.session_state.last_answer:
-                st.markdown('<div class="tu-card"><div class="tu-placeholder">행복한 하루 되세요!</div></div>', unsafe_allow_html=True)
+                st.markdown(build_card_html(), unsafe_allow_html=True)
             else:
                 with st.container(key="result_card"):
                     st.markdown('<div class="tu-label">🎤 내 말 · 음성 인식 결과</div><div class="tu-question">' + html.escape(st.session_state.last_question) + '</div>', unsafe_allow_html=True)
@@ -3638,20 +3789,22 @@ with main_column:
                                 st.success("이메일 발송 요청이 완료됐습니다. 수신함에서도 확인해 주세요.")  # 성공 안내
                             except Exception as error:  # 이메일 오류
                                 st.error("이메일 발송에 실패했습니다. Gmail 설정과 수신자 주소를 확인해 주세요.")  # 오류 안내
-            with st.expander("출퇴근 도우미"):  # 출발 시각·퇴근·알림·인수인계
-                show_commute_tools()  # 출근·퇴근 탭 표시
+            if st.session_state.active_feature == "commute":  # 방금 질문이 출퇴근 기능을 썼을 때만 표시
+                with st.expander("출퇴근 도우미"):  # 출발 시각·퇴근·알림·인수인계
+                    show_commute_tools()  # 출근·퇴근 탭 표시
             with reminder_slot:  # 접힌 메뉴와 상관없이 알림이 보이도록 위쪽에 표시
                 if st.session_state.get("departure_result"):  # 출근 계획이 있으면
                     show_reminders("departure_result", "출근 계획", "출발", DEPARTURE_ALERTS)  # 출근 카드
                 if st.session_state.get("work_end_result"):  # 퇴근 계획이 있으면
                     show_reminders("work_end_result", "퇴근 계획", "퇴근", WORK_END_ALERTS)  # 퇴근 카드
-            with st.expander("TXT 회의록 신규 인물 추출"):  # 신규 인물 후보 추출 (승인 전에는 등록하지 않음)
-                show_txt_person_extraction(meeting_file, meeting_text)  # 추출 상태 표시
-            with st.expander("나의 질문"):  # 질문 기록
-                for item in st.session_state.question_history:  # 최신 질문부터
-                    question = item["question"]  # 질문 원문
-                    st.button(question[:22] + "..." if len(question) > 22 else question, key=f"history_{item['id']}", type="primary" if item["id"] == st.session_state.selected_id else "secondary", help=question, use_container_width=True, on_click=load_history_item, args=(item,))  # 눌러서 다시 보기
-                if st.session_state.question_history:  # 기록이 있으면
+            if st.session_state.active_feature == "meeting":  # 방금 질문이 첨부 회의록을 썼을 때만 표시
+                with st.expander("TXT 회의록 신규 인물 추출"):  # 신규 인물 후보 추출 (승인 전에는 등록하지 않음)
+                    show_txt_person_extraction(meeting_file, meeting_text)  # 추출 상태 표시
+            if st.session_state.question_history:  # 질문을 처리한 뒤부터 표시
+                with st.expander("나의 질문"):  # 질문 기록
+                    for item in st.session_state.question_history:  # 최신 질문부터
+                        question = item["question"]  # 질문 원문
+                        st.button(question[:22] + "..." if len(question) > 22 else question, key=f"history_{item['id']}", type="primary" if item["id"] == st.session_state.selected_id else "secondary", help=question, use_container_width=True, on_click=load_history_item, args=(item,))  # 눌러서 다시 보기
                     st.button("🗑 질문 기록 삭제", use_container_width=True, key="clear_history", on_click=clear_question_history)  # 전체 삭제
-                else:  # 기록이 없으면
-                    st.caption("아직 저장된 질문이 없습니다.")  # 빈 상태 안내
+
+st.markdown('<div class="tu-ver">버전 v6 · Streamlit ' + st.__version__ + '</div>', unsafe_allow_html=True)  # 새 코드 배포 확인용

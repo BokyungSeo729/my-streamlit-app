@@ -4,3 +4,4 @@ requests
 yfinance
 google-api-python-client
 google-auth
+pillow
