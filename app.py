@@ -52,12 +52,6 @@ st.markdown("""
 }
 .stApp p, .stApp label, .stApp li, .stApp h1, .stApp h2, .stApp h3, .stApp h4 { color: #26293d; }
 .stApp [data-testid="stVerticalBlock"] { gap: 1rem; }
-.st-key-typed_question { max-width: 590px; margin: -.15rem auto .3rem; }
-.stApp [data-testid="stChatInput"] { background: #ffffffed !important; border: 1px solid #eae6f4 !important; border-radius: 25px !important; box-shadow: 0 3px 14px #56407604; }
-.stApp [data-testid="stChatInput"] > div, .stApp [data-testid="stChatInput"] > div > div { background: transparent !important; border: 0 !important; border-radius: 25px !important; }
-.stApp [data-testid="stChatInput"] textarea { background: transparent !important; color: #3b344e !important; font-size: .83rem !important; }
-.stApp [data-testid="stChatInput"] textarea::placeholder { color: #aaa1b9 !important; opacity: 1 !important; }
-.stApp [data-testid="stChatInputSubmitButton"] { color: #9579df !important; background: #f4efff !important; }
 .st-key-answer_card, .st-key-risk_card { background: #ffffffed; border: 1px solid #e8e4f3; border-radius: 22px; padding: 1.05rem 1.3rem; box-shadow: 0 7px 23px #58407606; }
 .st-key-answer_card [data-testid="stVerticalBlock"], .st-key-risk_card [data-testid="stVerticalBlock"] { gap: .65rem; }
 .icon-bubble { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; color: #956aff; background: #f6f0ff; flex: 0 0 auto; }
@@ -418,6 +412,7 @@ CSS += ".tu-badge { white-space: nowrap; flex: none; margin-left: 8px; }\n"
 CSS += ".tu-title { font-size: clamp(1.8rem, 3.8vw, 3.1rem); }\n"
 
 # 사이드 메뉴: 화면 폭이나 브라우저에 저장된 접힘 상태와 상관없이 본문 위에 겹쳐서 열림
+CSS += '.st-key-menu_drawer [data-testid="stHorizontalBlock"] { flex-wrap: nowrap; }\n.st-key-menu_drawer [data-testid="stColumn"] { min-width: 0 !important; }\n[class*="st-key-delete_"] button { padding: 0.35rem 0.5rem; min-height: 36px; }\n[class*="st-key-history_"] button { padding: 0.45rem 0.7rem; }\n'
 CSS += ".st-key-menu_drawer { position: fixed !important; top: 0; left: 0; width: min(300px, 85vw); height: 100vh; overflow-y: auto; z-index: 70; background: #ffffff; border-right: 1px solid #ece8f7; box-shadow: 12px 0 48px rgba(139, 108, 240, 0.22); padding: 26px 24px; }\n"
 
 RESULT_CSS = """
@@ -3078,6 +3073,32 @@ def show_reminders(plan_key, title, event, alerts):  # 1초마다 갱신되는 �
         st.caption("알림은 앱을 열어둔 동안 화면에 표시됩니다.")
 
 
+@st.fragment(run_every="1s")
+def run_hidden_alerts(plan_key, event, alerts):  # 계획 카드 없이 켜 둔 알림만 실행
+    plan = st.session_state.get(plan_key)
+    started = st.session_state.get(f"{plan_key}_alerts_started")
+    if not plan or started is None:
+        return
+    departure, now, last_key = plan[0], datetime.now(KST), f"{plan_key}_last_alert"
+    latest_due = None
+    for offset, message in alerts:
+        scheduled = departure - timedelta(minutes=offset)
+        if started <= scheduled <= now:
+            custom = st.session_state.get(f"{plan_key}_spoken_{offset}")
+            latest_due = (scheduled, custom[0] if custom else message, custom)
+    if not latest_due or (now - latest_due[0]).total_seconds() >= 60:  # 알림 시각 후 1분 동안만 표시
+        return
+    if st.session_state.get(last_key) != latest_due[0]:
+        st.session_state[last_key] = latest_due[0]
+        st.toast(latest_due[1], icon="🔔")
+    st.warning(latest_due[1])
+    voice = (latest_due[2][1], "audio/mpeg") if latest_due[2] else None
+    if voice is None and latest_due[0] == departure:
+        voice = st.session_state.get(f"{plan_key}_voice")
+    if voice:
+        st.audio(voice[0], format=voice[1], autoplay=True)
+
+
 def show_voice_settings(plan_key):  # 정각에 재생할 내 목소리 저장
     voice_key = f"{plan_key}_voice"
     with st.expander("🎙️ 미래의 나에게 알람"):
@@ -3426,9 +3447,33 @@ def load_history_item(item):  # 저장된 질문과 답변 다시 보기
     st.session_state.status_done = ""
 
 
+def clear_answer_card():  # 삭제한 질문이 화면에 표시 중이면 결과 카드 비우기
+    st.session_state.selected_id = None
+    st.session_state.last_question = ""
+    st.session_state.last_answer = ""
+    st.session_state.last_audio = None
+    st.session_state.mail_body = ""
+    st.session_state.last_actions = []
+    st.session_state.command_audio_preview = False
+    st.session_state.status_done = ""
+    st.session_state.active_feature = None
+
+
+def delete_question(item):  # 선택한 질문 하나를 기록과 대화 문맥에서 삭제
+    st.session_state.question_history = [x for x in st.session_state.question_history if x["id"] != item["id"]]
+    turns = st.session_state.turns
+    for index in range(len(turns) - 1):  # 같은 질문·답변 쌍을 찾아 제거
+        if turns[index]["content"] == item["question"] and turns[index + 1]["content"] == item["answer"]:
+            st.session_state.turns = turns[:index] + turns[index + 2:]
+            break
+    if item["id"] == st.session_state.selected_id:
+        clear_answer_card()
+
+
 def clear_question_history():  # 질문 기록 전체 삭제
     st.session_state.question_history = []
-    st.session_state.selected_id = None
+    st.session_state.turns = []
+    clear_answer_card()
 
 
 # 2-9. 질문 분류 --------------------------------------------------------------
@@ -3504,7 +3549,7 @@ MENU_ITEMS = [  # (아이콘, 메뉴 이름, 사용 가능 여부)
     ("💳", "명함 저장", True),
     ("👥", "인물 식별", st.session_state.identity_enabled),
 ]
-menu_html = '<div class="tu-brand">나의 질문</div>'
+menu_html = '<div class="tu-menu-title">기능</div>'
 for icon, menu_name, enabled in MENU_ITEMS:
     if enabled:
         menu_html += '<div class="tu-menu-item active"><div>' + icon + ' ' + menu_name + '</div></div>'
@@ -3512,6 +3557,16 @@ for icon, menu_name, enabled in MENU_ITEMS:
         menu_html += '<div class="tu-menu-item disabled"><div>' + icon + ' ' + menu_name + '</div><div class="tu-badge">꺼짐</div></div>'
 if st.session_state.show_sidebar:  # 메뉴 버튼을 눌렀을 때만 표시
     with st.container(key="menu_drawer"):
+        st.markdown('<div class="tu-brand">나의 질문</div>', unsafe_allow_html=True)
+        for item in st.session_state.question_history:  # 최신 질문부터
+            question = item["question"]
+            ask_col, delete_col = st.columns([5, 1], gap="small", vertical_alignment="center")
+            ask_col.button(question[:16] + "..." if len(question) > 16 else question, key=f"history_{item['id']}", type="primary" if item["id"] == st.session_state.selected_id else "secondary", help=question, width="stretch", on_click=load_history_item, args=(item,))  # 눌러서 다시 보기
+            delete_col.button("✕", key=f"delete_{item['id']}", help="이 질문 삭제", on_click=delete_question, args=(item,))  # 선택한 질문만 삭제
+        if st.session_state.question_history:
+            st.button("🗑 전체 삭제", key="clear_history", width="stretch", on_click=clear_question_history)
+        else:
+            st.caption("아직 저장된 질문이 없습니다.")
         st.markdown(menu_html, unsafe_allow_html=True)
         if st.button("닫기 ✕", key="close_menu", width="stretch"):
             st.session_state.show_sidebar = False
@@ -3623,7 +3678,6 @@ with main_column:
             schedule_clicked = st.button("회의록 일정을 달력에 등록", width="stretch", key="register_txt") if meeting_file is not None else False
             if image_file is not None:
                 st.caption("명함이라면 '이 명함을 연락처에 저장해 줘'라고 말해 주세요.")
-        typed_question = st.chat_input("또는 글자로 질문해 주세요", key="typed_question")  # 마이크 없이도 질문 가능
 
         meeting_text = to_text(meeting_file) if meeting_file is not None else ""  # 문서 내용 읽기
         st.session_state.document_name = meeting_file.name if meeting_file is not None else ""  # 공유·저장 문서명
@@ -3667,7 +3721,7 @@ with main_column:
         pending_question = None  # 이번에 처리할 질문
         started_at = time_module.time()  # 처리 시간 측정
         auto_submit_voice = False  # 이번 질문이 녹음으로 자동 전송됐는지 표시
-        if audio_value is not None and not typed_question:  # 녹음을 마치면 바로 처리
+        if audio_value is not None:  # 녹음을 마치면 바로 처리
             recording_hash = hashlib.sha256(audio_value.getvalue()).hexdigest()
             if recording_hash != st.session_state.last_recording:  # 같은 녹음을 중복 처리하지 않음
                 auto_submit_voice = True
@@ -3685,9 +3739,7 @@ with main_column:
                     fail_question("음성 인식에 실패했습니다. API 설정을 확인해 주세요.")
                 if not pending_question:
                     fail_question("음성을 인식하지 못했습니다. 다시 말씀해 주세요.")
-        if not pending_question and typed_question:  # 글자 질문을 제출했다면
-            pending_question = typed_question.strip()
-        elif not pending_question and schedule_clicked:  # 회의록 일정 등록 버튼을 눌렀다면
+        if not pending_question and schedule_clicked:  # 회의록 일정 등록 버튼을 눌렀다면
             pending_question = "첨부한 회의록의 일정을 달력에 등록해 줘"
 
         if pending_question:  # 유효한 질문이 있다면
@@ -3795,19 +3847,16 @@ with main_column:
             if st.session_state.active_feature == "commute":  # 방금 질문이 출퇴근 기능을 썼을 때만 표시
                 with st.expander("출퇴근 도우미"):  # 출발 시각·퇴근·알림·인수인계
                     show_commute_tools()  # 출근·퇴근 탭 표시
-            with reminder_slot:  # 접힌 메뉴와 상관없이 알림이 보이도록 위쪽에 표시
-                if st.session_state.get("departure_result"):  # 출근 계획이 있으면
-                    show_reminders("departure_result", "출근 계획", "출발", DEPARTURE_ALERTS)  # 출근 카드
-                if st.session_state.get("work_end_result"):  # 퇴근 계획이 있으면
-                    show_reminders("work_end_result", "퇴근 계획", "퇴근", WORK_END_ALERTS)  # 퇴근 카드
+            with reminder_slot:  # 방금 질문이 출퇴근 기능을 썼을 때만 계획 카드 표시
+                show_cards = st.session_state.active_feature == "commute"
+                for plan_key, title, event, alerts in (("departure_result", "출근 계획", "출발", DEPARTURE_ALERTS), ("work_end_result", "퇴근 계획", "퇴근", WORK_END_ALERTS)):
+                    if st.session_state.get(plan_key):
+                        if show_cards:
+                            show_reminders(plan_key, title, event, alerts)
+                        elif st.session_state.get(f"{plan_key}_alerts_started") is not None:
+                            run_hidden_alerts(plan_key, event, alerts)  # 카드가 숨겨져도 켜 둔 알림은 울림
             if st.session_state.active_feature == "meeting":  # 방금 질문이 첨부 회의록을 썼을 때만 표시
                 with st.expander("TXT 회의록 신규 인물 추출"):  # 신규 인물 후보 추출 (승인 전에는 등록하지 않음)
                     show_txt_person_extraction(meeting_file, meeting_text)  # 추출 상태 표시
-            if st.session_state.question_history:  # 질문을 처리한 뒤부터 표시
-                with st.expander("나의 질문"):  # 질문 기록
-                    for item in st.session_state.question_history:  # 최신 질문부터
-                        question = item["question"]  # 질문 원문
-                        st.button(question[:22] + "..." if len(question) > 22 else question, key=f"history_{item['id']}", type="primary" if item["id"] == st.session_state.selected_id else "secondary", help=question, use_container_width=True, on_click=load_history_item, args=(item,))  # 눌러서 다시 보기
-                    st.button("🗑 질문 기록 삭제", use_container_width=True, key="clear_history", on_click=clear_question_history)  # 전체 삭제
 
 st.markdown('<div class="tu-ver">버전 v6 · Streamlit ' + st.__version__ + '</div>', unsafe_allow_html=True)  # 새 코드 배포 확인용
