@@ -39,7 +39,7 @@ from PIL import Image  # 첨부 이미지 크기 조정
 
 
 # 1. 페이지 및 스타일 -----------------------------------------------------------
-st.set_page_config(page_title="Thumbs Up | AI Voice Assistant", page_icon="👍", layout="wide", initial_sidebar_state="expanded")  # 기본 화면 설정
+st.set_page_config(page_title="Thumbs Up | AI Voice Assistant", page_icon="👍", layout="wide", initial_sidebar_state="collapsed")  # 기본 화면 설정
 
 st.markdown("""
 <style>
@@ -388,7 +388,7 @@ header[data-testid="stHeader"] { background: transparent; }
 .st-key-toggle_sidebar button { min-height: 42px; width: 100%; border-radius: 999px; border: 1px solid #e3dcf7; background: #ffffff; color: #6b52d9; font-weight: 600; padding: 0.55rem 0.6rem; box-shadow: 0 4px 14px rgba(139, 108, 240, 0.08); }
 .st-key-toggle_sidebar button:hover { border-color: #b9a6f5; background: #f5f1ff; color: #5b45c4; }
 
-.st-key-settings_panel { position: fixed !important; top: 124px; right: 40px; width: min(380px, calc(100vw - 80px)); max-height: calc(100vh - 150px); overflow-y: auto; z-index: 60; background: #ffffff; border: 1px solid #ece8f7; border-radius: 28px; box-shadow: 0 24px 64px rgba(139, 108, 240, 0.28); padding: 22px 24px; }
+.st-key-settings_panel { position: fixed !important; top: 150px; right: 40px; width: min(380px, calc(100vw - 80px)); max-height: calc(100vh - 176px); overflow-y: auto; z-index: 60; background: #ffffff; border: 1px solid #ece8f7; border-radius: 28px; box-shadow: 0 24px 64px rgba(139, 108, 240, 0.28); padding: 22px 24px; }
 .tu-panel-title { color: #1f2033; font-size: 1.25rem; font-weight: 800; padding-bottom: 12px; border-bottom: 1px solid #efebfa; margin-bottom: 16px; }
 .tu-panel-sec { color: #1f2033; font-size: 0.98rem; font-weight: 700; margin: 18px 0 6px 0; }
 .tu-ver { color: #b5b1c9; font-size: 0.72rem; margin-top: 28px; }
@@ -417,11 +417,8 @@ CSS += ".tu-brand { margin: 6px 0 18px 0; }\n"
 CSS += ".tu-badge { white-space: nowrap; flex: none; margin-left: 8px; }\n"
 CSS += ".tu-title { font-size: clamp(1.8rem, 3.8vw, 3.1rem); }\n"
 
-if st.session_state["show_sidebar"]:
-    # 사이드 메뉴가 본문을 밀지 않고, 본문 위에 겹쳐서 열리게 함
-    CSS += '[data-testid="stSidebar"] { position: fixed !important; top: 0 !important; left: 0 !important; height: 100vh !important; box-shadow: 12px 0 48px rgba(139, 108, 240, 0.22); }\n'
-else:
-    CSS += '[data-testid="stSidebar"] { display: none; }\n'
+# 사이드 메뉴: 화면 폭이나 브라우저에 저장된 접힘 상태와 상관없이 본문 위에 겹쳐서 열림
+CSS += ".st-key-menu_drawer { position: fixed !important; top: 0; left: 0; width: min(300px, 85vw); height: 100vh; overflow-y: auto; z-index: 70; background: #ffffff; border-right: 1px solid #ece8f7; box-shadow: 12px 0 48px rgba(139, 108, 240, 0.22); padding: 26px 24px; }\n"
 
 RESULT_CSS = """
 .st-key-result_card { background: #ffffff; border: 1px solid #ece8f7; border-radius: 28px; box-shadow: 0 12px 40px rgba(139, 108, 240, 0.10); padding: 34px 38px; min-height: 300px; }
@@ -3513,8 +3510,12 @@ for icon, menu_name, enabled in MENU_ITEMS:
         menu_html += '<div class="tu-menu-item active"><div>' + icon + ' ' + menu_name + '</div></div>'
     else:
         menu_html += '<div class="tu-menu-item disabled"><div>' + icon + ' ' + menu_name + '</div><div class="tu-badge">꺼짐</div></div>'
-with st.sidebar:
-    st.markdown(menu_html, unsafe_allow_html=True)
+if st.session_state.show_sidebar:  # 메뉴 버튼을 눌렀을 때만 표시
+    with st.container(key="menu_drawer"):
+        st.markdown(menu_html, unsafe_allow_html=True)
+        if st.button("닫기 ✕", key="close_menu", width="stretch"):
+            st.session_state.show_sidebar = False
+            st.rerun()
 
 head_left, head_menu, head_right = st.columns([7, 0.6, 1.5], gap="small")  # 상단 타이틀, 메뉴 버튼, 설정 버튼
 with head_left:
@@ -3536,6 +3537,9 @@ with setting_column:
     if st.session_state.panel_open:
         with st.container(border=False, key="settings_panel"):
             st.markdown('<div class="tu-panel-title">⚙️ 설정 및 도구</div>', unsafe_allow_html=True)
+            if st.button("닫기 ✕", key="close_settings", width="stretch"):  # 화면을 내리거나 좁은 화면에서 상단 버튼이 가려져도 닫을 수 있게 함
+                st.session_state.panel_open = False
+                st.rerun()
             section_heading("wave", "답변 방식")
             st.session_state.answer_mode = st.radio("답변 방식", ANSWER_MODES, index=ANSWER_MODES.index(st.session_state.answer_mode), label_visibility="collapsed")
             section_heading("user", "음성 설정 (TTS)")
@@ -3588,12 +3592,11 @@ with setting_column:
                 st.session_state.recorder_count += 1
                 st.rerun()
             st.caption("설정은 현재 브라우저 세션에서 유지됩니다.")
-    else:
-        with st.container(key="hero"):  # 화면 오른쪽 아래 비서 이미지 (CSS: .st-key-hero)
-            if os.path.exists(ASSISTANT_IMG):
-                st.image(ASSISTANT_IMG, width="stretch")
-            else:
-                st.markdown('<div style="font-size:7rem; text-align:center;">🎙️</div>', unsafe_allow_html=True)
+    with st.container(key="hero"):  # 화면 오른쪽 아래 비서 이미지 (설정 창은 이미지와 본문 위에 겹쳐서 표시)
+        if os.path.exists(ASSISTANT_IMG):
+            st.image(ASSISTANT_IMG, width="stretch")
+        else:
+            st.markdown('<div style="font-size:7rem; text-align:center;">🎙️</div>', unsafe_allow_html=True)
 
 
 # 4. 본문 화면 -----------------------------------------------------------------
