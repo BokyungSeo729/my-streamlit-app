@@ -1,4 +1,11 @@
 
+# Thumbs Up AI 개인비서 app.py 구성
+# 1. 페이지 및 스타일: 기본 스타일, 답변 디자인, 화면 디자인
+# 2. 비밀정보와 기본 상태: 인증, 접속 잠금, 리스크 후속 관리, 답변·이메일 함수
+# 2-2 ~ 2-9. 부가 기능: 이메일·명함, 날씨, 달력, 주식, 인물 식별, 출퇴근, 질문 기록, 질문 분류
+# 3. 화면 아이콘과 설정 패널
+# 4. 본문 화면
+
 import base64  # 명함 이미지·GitHub 저장 파일 변환
 import calendar  # 월별 달력 계산
 import copy  # 기본 인물 목록 복사
@@ -59,11 +66,8 @@ st.markdown("""
 .stApp [data-testid="stChatInputSubmitButton"] { color: #9579df !important; background: #f4efff !important; }
 .st-key-answer_card, .st-key-risk_card { background: #ffffffed; border: 1px solid #e8e4f3; border-radius: 22px; padding: 1.05rem 1.3rem; box-shadow: 0 7px 23px #58407606; }
 .st-key-answer_card [data-testid="stVerticalBlock"], .st-key-risk_card [data-testid="stVerticalBlock"] { gap: .65rem; }
-.card-title { display: flex; align-items: center; gap: .6rem; font-size: .82rem; color: #7f758f; font-weight: 500; }
 .icon-bubble { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; color: #956aff; background: #f6f0ff; flex: 0 0 auto; }
 .icon-bubble svg { width: 20px; height: 20px; }
-.answer-preview { font-size: 1.02rem; line-height: 1.7; font-weight: 600; color: #373048; padding: .1rem .1rem .2rem 2.6rem; letter-spacing: -.025em; overflow-wrap: anywhere; }
-.answer-preview.empty { color: #aca4b9; font-weight: 400; font-size: .86rem; }
 .stApp audio { width: 100%; height: 42px; color-scheme: light !important; border-radius: 20px; }
 .stApp audio::-webkit-media-controls-panel { background: #f6f3fe; }
 .st-key-answer_card [data-testid="stExpander"], .st-key-risk_card [data-testid="stExpander"] { background: #f7f4fd !important; border: 0 !important; border-radius: 15px !important; }
@@ -392,7 +396,7 @@ RESULT_CSS = """
 st.markdown("<style>" + CSS + RESULT_CSS + "</style>", unsafe_allow_html=True)
 
 TITLE_HTML = (
-    '<div class="tu-title">Thumbs Up👍, <br>'
+    '<div class="tu-title">Thumbs Up,<br>'
     'Your <span class="tu-accent">professional</span> AI Voice Assistant</div>'
     '<div class="tu-sub">당신만의 AI Voice Assistant ThumbsUp입니다.</div>'
 )
@@ -501,20 +505,6 @@ MAX_FOLLOWUP_TASKS = 100  # 저장·불러오기에서 같은 최대 항목 수 
 MAX_FOLLOWUP_FILE_BYTES = 3_000_000  # 허용한 모든 입력을 담은 저장 파일도 다시 불러올 수 있는 크기
 RISK_CATEGORIES = ("담당자", "기한", "업무 범위")  # 기존 점검 기준 유지
 RISK_FIELDS = ("category", "issue", "evidence", "question", "action")  # 분석 결과의 고정 항목
-RISK_SCHEMA = {  # 자유 문장 대신 항목별 자료로 받아 화면과 체크리스트에 함께 사용
-    "type": "object",
-    "properties": {"items": {"type": "array", "items": {
-        "type": "object",
-        "properties": {
-            "category": {"type": "string", "enum": list(RISK_CATEGORIES)},
-            "issue": {"type": "string"}, "evidence": {"type": "string"},
-            "question": {"type": "string"},  # 상대에게 물을 구체적인 확인 질문
-            "action": {"type": "string", "description": "업무 대상과 확인할 정보를 포함한 독립적인 과제 제목. 예: 홍보 영상 제작 일정의 확인 마감일 정하기. 확인하기 또는 정하기만 쓰면 안 됨."},
-        },
-        "required": list(RISK_FIELDS), "additionalProperties": False,
-    }}},
-    "required": ["items"], "additionalProperties": False,
-}  # 분석에 없던 담당자·기한은 자동으로 추가하지 않음
 
 
 def compact_text(text):  # 줄바꿈·띄어쓰기에 흔들리지 않게 비교용 문자열 생성
@@ -943,7 +933,6 @@ FOLLOWUP_CSS = """
 .followup-summary span { border-radius:999px; padding:.3rem .7rem; font-size:.78rem; background:#f3eefc; color:#77559b; }
 .followup-summary .done { background:#e7f6ef; color:#3e806b; }
 .followup-summary .excluded { background:#f0f1f6; color:#73788a; }
-.followup-task-title { font-size:.94rem; line-height:1.7; color:#3c344e; font-weight:650; }
 .followup-state { display:inline-block; margin-bottom:.4rem; padding:.2rem .6rem; border-radius:999px; background:#fff0f6; color:#9c4f76; font-size:.74rem; }
 .st-key-followup_card [data-testid="stForm"] { background:#fcfbff !important; border:1px solid #ece7f5 !important; border-radius:15px !important; padding:.9rem !important; }
 .st-key-followup_card [data-testid="stExpander"] { background:#fff !important; border:1px solid #eee9f6 !important; border-radius:14px !important; }
