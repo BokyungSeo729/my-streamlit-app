@@ -29,7 +29,7 @@ from openai import OpenAI, OpenAIError  # OpenAI API 호출
 
 
 # 1. 페이지 및 스타일 -----------------------------------------------------------
-st.set_page_config(page_title="Thumbs Up | AI Voice Assistant", page_icon="🎙️", layout="wide", initial_sidebar_state="collapsed")  # 기본 화면 설정
+st.set_page_config(page_title="Thumbs Up | AI Voice Assistant", page_icon="👍", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""
 <style>
