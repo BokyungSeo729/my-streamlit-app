@@ -392,7 +392,7 @@ RESULT_CSS = """
 st.markdown("<style>" + CSS + RESULT_CSS + "</style>", unsafe_allow_html=True)
 
 TITLE_HTML = (
-    '<div class="tu-title">Thumbs Up, 👍<br>'
+    '<div class="tu-title">Thumbs Up👍, <br>'
     'Your <span class="tu-accent">professional</span> AI Voice Assistant</div>'
     '<div class="tu-sub">당신만의 AI Voice Assistant ThumbsUp입니다.</div>'
 )
