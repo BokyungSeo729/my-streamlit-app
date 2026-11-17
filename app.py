@@ -487,10 +487,29 @@ def retrieve(question, history):
     # 원래 질문은 항상 포함하고, 중복 제거 후 최대 4개까지 사용
     queries = list(dict.fromkeys([question] + generated))[:4]
 
+    # 캐시된 벡터 저장소가 사라진 컬렉션을 가리키면("... does not exist") 단계별로 복구하며 다시 검색한다
+    #   1) 백서 검색기 캐시만 비우고 다시 불러오기
+    #   2) chromadb 내부 클라이언트 캐시까지 비우기 (chroma_db 폴더가 통째로 바뀐 경우)
+    #   3) 그래도 안 되면 이 세션의 업로드 문서 저장소가 초기화된 것이므로 비우고 백서만으로 검색
+    recoveries = [
+        lambda: get_base_retriever.clear(),
+        reset_vector_cache,
+        drop_user_store,
+    ]
+    for step in range(len(recoveries) + 1):
+        try:
+            return search_docs(queries), queries
+        except Exception as e:
+            if "does not exist" not in str(e) or step == len(recoveries):
+                raise
+            recoveries[step]()
+
+
+def search_docs(queries):
+    """백서(+업로드 문서) 검색기로 모든 검색 질문을 검색하고 중복을 뺀다."""
     retrievers = [get_base_retriever()]
     if st.session_state.get("user_retriever") is not None:
         retrievers.append(st.session_state.user_retriever)
-
     docs, seen = [], set()
     for query in queries:
         for retriever in retrievers:
@@ -498,7 +517,25 @@ def retrieve(question, history):
                 if doc.page_content not in seen:
                     docs.append(doc)
                     seen.add(doc.page_content)
-    return docs, queries
+    return docs
+
+
+def reset_vector_cache():
+    """캐시된 백서 검색기와 chromadb 내부 클라이언트 캐시를 비워, 다음 호출 때 chroma_db를 새로 읽게 한다."""
+    get_base_retriever.clear()
+    try:
+        from chromadb.api.client import SharedSystemClient
+        SharedSystemClient.clear_system_cache()
+    except Exception:
+        pass
+
+
+def drop_user_store():
+    had_docs = bool(st.session_state.get("user_docs"))
+    for key in ("user_store", "user_retriever", "user_docs"):
+        st.session_state.pop(key, None)
+    if had_docs:
+        st.warning("업로드한 문서 저장소가 초기화되어 등록된 문서 목록을 비웠어요. 필요하면 문서를 다시 업로드해 주세요.")
 
 
 def source_text(docs):
