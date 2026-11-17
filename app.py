@@ -611,7 +611,7 @@ with st.sidebar:
     st.markdown('<div class="side-label">대화 기록</div>', unsafe_allow_html=True)
     saved = sorted(
         [c for c in st.session_state.chats if c["messages"]],
-        key=lambda c: c["updated"], reverse=True,
+        key=lambda c: c.get("updated", ""), reverse=True,
     )
     if not saved:
         st.markdown('<div class="side-empty">아직 대화가 없어요</div>', unsafe_allow_html=True)
