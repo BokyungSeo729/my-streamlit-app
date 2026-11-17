@@ -838,14 +838,13 @@ def inject_scroll_helper(target, scroll_to):
 
 # ---------------------------------------------------------------
 # 답변 피드백 (👍/👎 + 👎 이유) · 다시 생성
-# - 기록은 Google Drive의 CSV 파일에 한 줄씩 추가된다 (같은 답변을 여러 번 평가하면 여러 줄,
+# - 기록은 Colab의 /content/feedback.csv 에 한 줄씩 추가된다 (같은 답변을 여러 번 평가하면 여러 줄,
 #   분석할 때는 answer_id + version 별로 마지막 줄을 쓰면 된다)
-# - Colab 노트북에서 streamlit을 실행하기 전에 drive.mount('/content/drive')를 먼저 실행해야 한다
+# - Colab 런타임이 끊기거나 초기화되면 파일이 사라지므로, 필요하면 그 전에 다운로드해 둔다
 # ---------------------------------------------------------------
-DRIVE_ROOT = "/content/drive/MyDrive"
-FEEDBACK_DIR = os.path.join(DRIVE_ROOT, "ablemate")          # 저장 폴더 (없으면 자동 생성)
-FEEDBACK_FILE = "feedback.csv"
-LOCAL_FALLBACK = "feedback_local.csv"                         # Drive가 연결되지 않았을 때 임시 저장
+# Colab이면 /content, 다른 환경이면 app.py가 있는 폴더에 저장 (절대 경로로 고정)
+FEEDBACK_DIR = "/content" if os.path.isdir("/content") else os.path.dirname(os.path.abspath(__file__))
+FEEDBACK_PATH = os.path.join(FEEDBACK_DIR, "feedback.csv")
 
 FEEDBACK_REASONS = ["정보가 틀려요", "원하는 답이 아니에요", "문서에 있는데 못 찾았어요", "너무 길거나 짧아요"]
 FEEDBACK_FIELDS = [
@@ -854,20 +853,11 @@ FEEDBACK_FIELDS = [
 ]
 
 
-def feedback_path():
-    """Drive가 마운트되어 있으면 Drive 폴더, 아니면 Colab 로컬 임시 파일 경로를 돌려준다."""
-    if os.path.isdir(DRIVE_ROOT):
-        os.makedirs(FEEDBACK_DIR, exist_ok=True)
-        return os.path.join(FEEDBACK_DIR, FEEDBACK_FILE), True
-    return LOCAL_FALLBACK, False
-
-
 def save_feedback(row):
-    path, on_drive = feedback_path()
-    is_new = not os.path.exists(path)
+    is_new = not os.path.exists(FEEDBACK_PATH)
     try:
         # utf-8-sig: 엑셀에서 열어도 한글이 깨지지 않는다
-        with open(path, "a", newline="", encoding="utf-8-sig") as f:
+        with open(FEEDBACK_PATH, "a", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(f, fieldnames=FEEDBACK_FIELDS)
             if is_new:
                 writer.writeheader()
@@ -875,8 +865,10 @@ def save_feedback(row):
     except OSError as e:
         st.toast(f"피드백을 저장하지 못했어요: {e}")
         return
-    if not on_drive:
-        st.toast("Google Drive가 연결되지 않아 피드백을 Colab에 임시로 저장했어요.")
+    # 저장 위치를 확인할 수 있도록 처음 저장할 때 한 번 경로를 알려 준다
+    if not st.session_state.get("fb_path_shown"):
+        st.session_state.fb_path_shown = True
+        st.toast(f"피드백 저장 위치: {FEEDBACK_PATH}")
 
 
 def find_pair(chat_id, qid):
