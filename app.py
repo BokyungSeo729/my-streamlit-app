@@ -28,6 +28,11 @@ COLLECTION = "aivle_docs"
 BASE_NAME = "AIVLE School 백서"
 MAX_HISTORY = 10          # 최근 5번의 질문·답변(=메시지 10개)만 기억
 
+# 피드백 CSV 저장 위치: Colab이면 /content, 그 밖(Streamlit Cloud 등)은 app.py가 있는 폴더
+# Streamlit Cloud에서는 앱이 재시작·재배포되면 이 파일이 지워지므로 ⚙ 옵션의 '피드백 다운로드'로 받아 둔다
+FEEDBACK_DIR = "/content" if os.path.isdir("/content") else os.path.dirname(os.path.abspath(__file__))
+FEEDBACK_PATH = os.path.join(FEEDBACK_DIR, "feedback.csv")
+
 RECOMMENDS = [
     "에이블스쿨은 어떤 교육 과정인가요?",
     "출결 규정을 알려주세요.",
@@ -767,6 +772,23 @@ with st.sidebar:
                 key="opt_style",
                 captions=[s["desc"] for s in STYLES.values()],
             )
+            # 서버에 쌓인 피드백 CSV 내려받기
+            st.divider()
+            if os.path.exists(FEEDBACK_PATH):
+                with open(FEEDBACK_PATH, "rb") as f:
+                    fb_bytes = f.read()
+                with open(FEEDBACK_PATH, newline="", encoding="utf-8-sig") as f:
+                    fb_count = max(sum(1 for _ in csv.reader(f)) - 1, 0)   # 머리글 줄 제외
+                st.download_button(
+                    "⬇ 피드백 다운로드 (.csv)",
+                    data=fb_bytes,
+                    file_name=f"feedback_{datetime.now():%Y%m%d_%H%M}.csv",
+                    mime="text/csv",
+                    key="dl_feedback",
+                )
+                st.caption(f"저장된 피드백 {fb_count}건 · 앱이 재시작되면 지워지니 수시로 받아 두세요.")
+            else:
+                st.caption("아직 저장된 피드백이 없어요.")
 
 
 # ---------------------------------------------------------------
@@ -842,9 +864,6 @@ def inject_scroll_helper(target, scroll_to):
 #   분석할 때는 answer_id + version 별로 마지막 줄을 쓰면 된다)
 # - Colab 런타임이 끊기거나 초기화되면 파일이 사라지므로, 필요하면 그 전에 다운로드해 둔다
 # ---------------------------------------------------------------
-# Colab이면 /content, 다른 환경이면 app.py가 있는 폴더에 저장 (절대 경로로 고정)
-FEEDBACK_DIR = "/content" if os.path.isdir("/content") else os.path.dirname(os.path.abspath(__file__))
-FEEDBACK_PATH = os.path.join(FEEDBACK_DIR, "feedback.csv")
 
 FEEDBACK_REASONS = ["정보가 틀려요", "원하는 답이 아니에요", "문서에 있는데 못 찾았어요", "너무 길거나 짧아요"]
 FEEDBACK_FIELDS = [
