@@ -4,6 +4,7 @@ import re
 import html
 import json
 import base64
+import csv
 import time
 import uuid
 import tempfile
@@ -189,7 +190,7 @@ html, body, .stApp, .stApp p, .stApp li, .stApp label, .stApp button, .stApp inp
 [data-testid="stSidebar"] .block-container{padding-top:1rem;}
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"]{gap:.4rem;}
 /* 직접 넣은 HTML 블록이 아래 요소와 겹치지 않도록 Streamlit의 음수 여백을 없앤다 */
-[data-testid="stMarkdownContainer"]:has(.logo, .side-label, .side-group, .side-empty, .doc-chip, .anchor, .source-note, .recs-label, .sr-head, .followup-label){margin-bottom:0;}
+[data-testid="stMarkdownContainer"]:has(.logo, .side-label, .side-group, .side-empty, .doc-chip, .anchor, .source-note, .recs-label, .sr-head, .followup-label, .fb-title, .fb-done){margin-bottom:0;}
 .logo{height:26px;margin:2px 0 14px 4px;display:block;}
 .side-label{font-size:11.5px;font-weight:700;letter-spacing:.1em;color:var(--p600);margin:18px 4px 6px;}
 .side-group{font-size:11.5px;color:var(--muted);margin:8px 6px 2px;}
@@ -281,6 +282,17 @@ html, body, .stApp, .stApp p, .stApp li, .stApp label, .stApp button, .stApp inp
 [data-testid="stChatMessageAvatarAssistant"]{background:linear-gradient(135deg,var(--p700),var(--p400));color:#fff;}
 [data-testid="stChatMessageAvatarImage"]{width:2.4rem;height:2.4rem;}
 
+/* 답변 피드백 · 다시 생성 */
+[class*="st-key-fbrow_"]{margin-top:4px;}
+[class*="st-key-regen_"] button{border:1px solid var(--p200);background:#fff;color:var(--p700);font-size:13px;
+  padding:.3rem .85rem;min-height:0;border-radius:999px;}
+[class*="st-key-regen_"] button:hover{background:var(--p100);border-color:var(--p400);color:var(--p700);}
+[class*="st-key-rbox_"]{background:var(--p50);border-color:var(--p200) !important;border-radius:14px;}
+.fb-title{font-size:13.5px;font-weight:700;color:var(--ink);}
+.fb-done{font-size:13px;color:var(--muted);}
+[class*="st-key-send_"] button{border:none;color:#fff;background:var(--p600);font-size:13px;padding:.35rem 1rem;min-height:0;}
+[class*="st-key-send_"] button:hover{color:#fff;background:var(--p700);}
+
 /* 이어서 물어보세요 (누르면 바로 질문) */
 .followup-label{font-size:15px;font-weight:700;color:var(--ink);margin:14px 0 4px;}
 [class*="st-key-fu_"] button{border:1px solid var(--p200);background:#fff;border-radius:999px;color:var(--p800);
@@ -333,9 +345,10 @@ def get_embeddings():
 
 
 @st.cache_resource
-def get_llm():
-    # temperature=0: 답변의 무작위성을 줄여 문서에 충실하게 답한다.
-    return ChatOpenAI(model="gpt-4o-mini", temperature=0)
+def get_llm(temperature=0):
+    # 기본 temperature=0: 답변의 무작위성을 줄여 문서에 충실하게 답한다.
+    # '다시 생성'에서는 0.7을 써서 이전 답변과 다른 답이 나오게 한다.
+    return ChatOpenAI(model="gpt-4o-mini", temperature=temperature)
 
 
 @st.cache_resource
@@ -387,6 +400,7 @@ ANSWER_PROMPT = ChatPromptTemplate.from_messages([
 - 답변 전체를 ```markdown 같은 코드블록으로 감싸지 마세요.
 - 근거가 있는 답변이라면 마지막에 '💬 이어서 물어보세요' 제목 아래 관련 후속 질문 2개를 목록으로 제안하세요. 확인할 수 없다는 답변에는 붙이지 마세요.
 {plan_rules}
+{regen_note}
 """),
     MessagesPlaceholder("history"),
     ("human", "검색 자료:\n{context}\n\n현재 질문: {input}"),
@@ -458,7 +472,8 @@ def to_messages(messages):
 
 
 def retrieve(question, history):
-    """멀티쿼리로 검색 질문을 만들고, 백서 + 업로드 문서를 검색해 합친다."""
+    """멀티쿼리로 검색 질문을 만들고, 백서 + 업로드 문서를 검색해 합친다.
+    피드백 기록에 남기기 위해 (검색된 문서, 사용한 검색 질문)을 함께 돌려준다."""
     llm = get_llm()
     query_text = (MULTI_QUERY_PROMPT | llm | StrOutputParser()).invoke(
         {"input": question, "history": history}
@@ -478,7 +493,7 @@ def retrieve(question, history):
                 if doc.page_content not in seen:
                     docs.append(doc)
                     seen.add(doc.page_content)
-    return docs
+    return docs, queries
 
 
 def source_text(docs):
@@ -821,6 +836,187 @@ def inject_scroll_helper(target, scroll_to):
         components.html(html, height=0)
 
 
+# ---------------------------------------------------------------
+# 답변 피드백 (👍/👎 + 👎 이유) · 다시 생성
+# - 기록은 Google Drive의 CSV 파일에 한 줄씩 추가된다 (같은 답변을 여러 번 평가하면 여러 줄,
+#   분석할 때는 answer_id + version 별로 마지막 줄을 쓰면 된다)
+# - Colab 노트북에서 streamlit을 실행하기 전에 drive.mount('/content/drive')를 먼저 실행해야 한다
+# ---------------------------------------------------------------
+DRIVE_ROOT = "/content/drive/MyDrive"
+FEEDBACK_DIR = os.path.join(DRIVE_ROOT, "ablemate")          # 저장 폴더 (없으면 자동 생성)
+FEEDBACK_FILE = "feedback.csv"
+LOCAL_FALLBACK = "feedback_local.csv"                         # Drive가 연결되지 않았을 때 임시 저장
+
+FEEDBACK_REASONS = ["정보가 틀려요", "원하는 답이 아니에요", "문서에 있는데 못 찾았어요", "너무 길거나 짧아요"]
+FEEDBACK_FIELDS = [
+    "timestamp", "chat_id", "answer_id", "version", "event", "reasons", "comment",
+    "question", "search_queries", "retrieved_docs", "answer", "style", "is_plan",
+]
+
+
+def feedback_path():
+    """Drive가 마운트되어 있으면 Drive 폴더, 아니면 Colab 로컬 임시 파일 경로를 돌려준다."""
+    if os.path.isdir(DRIVE_ROOT):
+        os.makedirs(FEEDBACK_DIR, exist_ok=True)
+        return os.path.join(FEEDBACK_DIR, FEEDBACK_FILE), True
+    return LOCAL_FALLBACK, False
+
+
+def save_feedback(row):
+    path, on_drive = feedback_path()
+    is_new = not os.path.exists(path)
+    try:
+        # utf-8-sig: 엑셀에서 열어도 한글이 깨지지 않는다
+        with open(path, "a", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=FEEDBACK_FIELDS)
+            if is_new:
+                writer.writeheader()
+            writer.writerow(row)
+    except OSError as e:
+        st.toast(f"피드백을 저장하지 못했어요: {e}")
+        return
+    if not on_drive:
+        st.toast("Google Drive가 연결되지 않아 피드백을 Colab에 임시로 저장했어요.")
+
+
+def find_pair(chat_id, qid):
+    """채팅방에서 같은 id를 가진 (질문, 답변) 메시지를 찾는다."""
+    for c in st.session_state.chats:
+        if c["id"] == chat_id:
+            q = next((m for m in c["messages"] if m["role"] == "user" and m["id"] == qid), None)
+            a = next((m for m in c["messages"] if m["role"] == "assistant" and m["id"] == qid), None)
+            return c, q, a
+    return None, None, None
+
+
+def feedback_row(chat, q, a, event, reasons=None, comment=""):
+    return {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "chat_id": chat["id"],
+        "answer_id": a["id"],
+        "version": a.get("ver", 0),
+        "event": event,                                   # up / down / regenerate
+        "reasons": " | ".join(reasons or []),
+        "comment": comment,
+        "question": q["content"] if q else "",
+        "search_queries": json.dumps(a.get("queries", []), ensure_ascii=False),
+        "retrieved_docs": json.dumps(a.get("docs", []), ensure_ascii=False),
+        "answer": a["content"],
+        "style": a.get("style", ""),
+        "is_plan": bool(a.get("plan")),
+    }
+
+
+def on_feedback(chat_id, qid, key):
+    chat, q, a = find_pair(chat_id, qid)
+    if a is None:
+        return
+    value = st.session_state.get(key)
+    if value is None:                 # 선택 취소
+        a["rating"] = None
+        return
+    a["rating"] = "up" if value == 1 else "down"
+    a.pop("reason_saved", None)
+    save_feedback(feedback_row(chat, q, a, a["rating"]))
+    if a["rating"] == "up":
+        st.toast("피드백 고마워요! 😊")
+
+
+def submit_reason(chat_id, qid, ver):
+    chat, q, a = find_pair(chat_id, qid)
+    if a is None:
+        return
+    reasons = st.session_state.get(f"rs_{qid}_{ver}") or []
+    if isinstance(reasons, str):
+        reasons = [reasons]
+    comment = st.session_state.get(f"cm_{qid}_{ver}", "").strip()
+    a["reasons"], a["comment"], a["reason_saved"] = list(reasons), comment, True
+    save_feedback(feedback_row(chat, q, a, "down", reasons, comment))
+    st.toast("의견 고마워요! 답변 개선에 반영할게요.")
+
+
+def request_regen(chat_id, qid):
+    chat, q, a = find_pair(chat_id, qid)
+    if a is None:
+        return
+    save_feedback(feedback_row(chat, q, a, "regenerate", a.get("reasons"), a.get("comment", "")))
+    st.session_state.regen = qid
+
+
+def doc_snippets(docs):
+    """피드백 기록용: 검색된 문서 조각의 출처·쪽수·앞부분."""
+    return [
+        {
+            "source": d.metadata.get("source_name", BASE_NAME),
+            "page": d.metadata.get("page_no"),
+            "text": d.page_content[:500],
+        }
+        for d in docs
+    ]
+
+
+def regen_note(a):
+    """다시 생성할 때 답변 프롬프트에 붙이는 안내 (이전 답변·불만족 이유 포함)."""
+    note = (
+        "[다시 생성 요청]\n"
+        "사용자가 이전 답변에 만족하지 않아 답변을 다시 요청했습니다. "
+        "이전 답변과 구성과 표현을 다르게 하되, 사실은 반드시 검색 자료에 근거하세요."
+    )
+    if a.get("reasons"):
+        note += "\n사용자가 고른 불만족 이유: " + ", ".join(a["reasons"])
+    if a.get("comment"):
+        note += "\n사용자 의견: " + a["comment"]
+    note += "\n이전 답변(앞부분):\n" + a["content"][:1500]
+    return note
+
+
+def feedback_widget(key, on_change, args):
+    """👍/👎 위젯 (구버전 Streamlit이면 가로 라디오로 대신한다)."""
+    if hasattr(st, "feedback"):
+        st.feedback("thumbs", key=key, on_change=on_change, args=args)
+    else:
+        st.radio("평가", [1, 0], format_func=lambda v: "👍" if v == 1 else "👎", index=None,
+                 key=key, on_change=on_change, args=args, horizontal=True, label_visibility="collapsed")
+
+
+def render_feedback(a):
+    """참고한 문서 아래: 👍/👎 + 다시 생성 버튼, 👎이면 이유 선택 상자."""
+    chat_id, qid, ver = st.session_state.current, a["id"], a.get("ver", 0)
+    key = f"fb_{qid}_{ver}"
+    # 다른 채팅방에 다녀와도 이전 평가가 표시되도록 저장된 값을 위젯에 다시 넣는다
+    if key not in st.session_state and a.get("rating"):
+        st.session_state[key] = 1 if a["rating"] == "up" else 0
+
+    # 👍/👎 바로 옆에 '다시 생성' (가로 컨테이너가 없는 구버전이면 열로 나눈다)
+    try:
+        row = st.container(key=f"fbrow_{qid}_{ver}", horizontal=True, vertical_alignment="center", gap="small")
+        slots = (row, row)
+    except TypeError:
+        row = st.container(key=f"fbrow_{qid}_{ver}")
+        slots = tuple(row.columns([1, 3], vertical_alignment="center"))
+    with slots[0]:
+        feedback_widget(key, on_feedback, (chat_id, qid, key))
+    with slots[1]:
+        st.button("↻ 다시 생성", key=f"regen_{qid}_{ver}", on_click=request_regen, args=(chat_id, qid))
+
+    if a.get("rating") == "down":
+        with st.container(key=f"rbox_{qid}_{ver}", border=True):
+            if a.get("reason_saved"):
+                picked = ", ".join(a.get("reasons") or []) or "이유 선택 없음"
+                st.markdown(f'<div class="fb-done">의견을 보냈어요 · {html.escape(picked)}</div>', unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="fb-title">어떤 점이 아쉬웠나요?</div>', unsafe_allow_html=True)
+                if hasattr(st, "pills"):
+                    st.pills("이유", FEEDBACK_REASONS, selection_mode="multi",
+                             key=f"rs_{qid}_{ver}", label_visibility="collapsed")
+                else:
+                    st.multiselect("이유", FEEDBACK_REASONS, key=f"rs_{qid}_{ver}", label_visibility="collapsed")
+                st.text_input("의견", key=f"cm_{qid}_{ver}", placeholder="더 하고 싶은 말이 있다면 적어 주세요 (선택)",
+                              label_visibility="collapsed")
+                st.button("의견 보내기", key=f"send_{qid}_{ver}", on_click=submit_reason, args=(chat_id, qid, ver))
+                st.caption("피드백은 답변 개선을 위해 질문·답변과 함께 저장돼요.")
+
+
 def render_message(m):
     # 답변이 끝난 메시지는 '완료 · 다 됐어요' 캐릭터를 아바타로 쓴다
     avatar = AVATAR_DONE if m["role"] == "assistant" else None
@@ -839,6 +1035,8 @@ def render_message(m):
                     st.button(q, key=f"fu_{m['id']}_{i}", on_click=ask, args=(q,))
             if st.session_state.opt_source and m.get("sources"):
                 st.markdown(f'<div class="source-note">{m["sources"]}</div>', unsafe_allow_html=True)
+            # 참고한 문서 바로 아래: 👍/👎 · 다시 생성 · 👎 이유
+            render_feedback(m)
             # 학습 계획 답변에는 Markdown 파일 다운로드 버튼을 자동으로 붙인다
             if m.get("plan_md"):
                 st.download_button(
@@ -848,6 +1046,46 @@ def render_message(m):
                     mime="text/markdown",
                     key="dl_" + m["id"],
                 )
+
+
+def generate_answer(question, history, qid, note=""):
+    """검색 → 답변 스트리밍을 하고, 저장할 답변 메시지(dict)를 돌려준다.
+    note가 있으면 '다시 생성' 요청으로 보고 temperature를 높여 다른 답을 만든다."""
+    plan = is_plan_request(question)            # 학습 계획 요청인지 확인
+    # 답변을 찾고 쓰는 동안에는 '생각 중 · 찾아볼게요' 캐릭터를 보여 준다
+    with st.chat_message("assistant", avatar=AVATAR_THINK):
+        st.markdown(f'<div class="anchor" id="a-{qid}"></div>', unsafe_allow_html=True)
+        try:
+            with st.spinner("문서를 찾아보는 중..." if not note else "답변을 다시 만드는 중..."):
+                docs, queries = retrieve(question, history)
+            llm = get_llm(0.7 if note else 0)
+            stream = (ANSWER_PROMPT | llm | StrOutputParser()).stream({
+                "input": question,
+                "history": history,
+                "context": format_docs(docs),
+                "style": STYLES[st.session_state.opt_style]["prompt"],
+                "plan_rules": PLAN_RULES if plan else "",
+                "regen_note": note,
+            })
+            answer = st.write_stream(clean_stream(stream))
+        except Exception as e:
+            st.error(f"답변을 만드는 중 문제가 발생했습니다: {e}")
+            st.stop()
+
+    msg = {
+        "role": "assistant",
+        "content": answer,
+        "sources": "" if "확인할 수 없" in answer else source_text(docs),
+        "id": qid,
+        "queries": queries,                     # 피드백 기록용
+        "docs": doc_snippets(docs),             # 피드백 기록용
+        "style": st.session_state.opt_style,
+        "plan": plan,
+    }
+    if plan and "확인할 수 없" not in answer:
+        msg["plan_md"] = plan_markdown(answer, question)
+        msg["plan_file"] = f"학습계획_{datetime.now():%Y%m%d_%H%M}.md"
+    return msg
 
 
 def rec_row():
@@ -894,45 +1132,33 @@ if not chat["messages"] and not pending:
         user_input = typed
 else:
     # 답변 화면: 이전 대화 출력 + 아래쪽 고정 입력창
-    for m in chat["messages"]:
+    regen_id = st.session_state.pop("regen", None)
+    for idx, m in enumerate(chat["messages"]):
+        if regen_id and m["role"] == "assistant" and m["id"] == regen_id and idx > 0:
+            # '다시 생성': 같은 질문을 같은 이전 대화 맥락으로 다시 답하고, 이 자리의 답변을 바꾼다
+            question = chat["messages"][idx - 1]["content"]
+            history = to_messages(chat["messages"][:idx - 1])
+            new_msg = generate_answer(question, history, m["id"], regen_note(m))
+            new_msg["ver"] = m.get("ver", 0) + 1
+            chat["messages"][idx] = new_msg
+            chat["updated"] = time.time()
+            st.session_state.scroll_to = "a-" + m["id"]
+            st.rerun()
         render_message(m)
     user_input = st.chat_input("질문을 입력하세요", key="main_chat") or pending
 
 if user_input:
     history = to_messages(chat["messages"])    # 이번 질문 이전의 대화
-    plan = is_plan_request(user_input)          # 학습 계획 요청인지 확인
     qid = uuid.uuid4().hex[:8]
     render_message({"role": "user", "content": user_input, "id": qid})
-
-    # 답변을 찾고 쓰는 동안에는 '생각 중 · 찾아볼게요' 캐릭터를 보여 준다
-    with st.chat_message("assistant", avatar=AVATAR_THINK):
-        st.markdown(f'<div class="anchor" id="a-{qid}"></div>', unsafe_allow_html=True)
-        try:
-            with st.spinner("문서를 찾아보는 중..."):
-                docs = retrieve(user_input, history)
-            stream = (ANSWER_PROMPT | get_llm() | StrOutputParser()).stream({
-                "input": user_input,
-                "history": history,
-                "context": format_docs(docs),
-                "style": STYLES[st.session_state.opt_style]["prompt"],
-                "plan_rules": PLAN_RULES if plan else "",
-            })
-            answer = st.write_stream(clean_stream(stream))
-        except Exception as e:
-            st.error(f"답변을 만드는 중 문제가 발생했습니다: {e}")
-            st.stop()
+    assistant_msg = generate_answer(user_input, history, qid)
 
     # 답변 생성이 성공한 뒤에만 대화를 저장한다.
-    sources = "" if "확인할 수 없" in answer else source_text(docs)
     now = time.time()
     if not chat["messages"] and chat["title"] == "새 대화":
         # 채팅방 이름은 첫 질문으로 정한다 (⋯ 메뉴에서 바꿀 수 있음)
         chat["title"] = user_input[:20] + ("…" if len(user_input) > 20 else "")
     chat["messages"].append({"role": "user", "content": user_input, "id": qid, "ts": now})
-    assistant_msg = {"role": "assistant", "content": answer, "sources": sources, "id": qid}
-    if plan and "확인할 수 없" not in answer:
-        assistant_msg["plan_md"] = plan_markdown(answer, user_input)
-        assistant_msg["plan_file"] = f"학습계획_{datetime.now():%Y%m%d_%H%M}.md"
     chat["messages"].append(assistant_msg)
     chat["updated"] = now
     st.rerun()   # 사이드바의 대화 기록·추천 질문·다운로드 버튼을 갱신
