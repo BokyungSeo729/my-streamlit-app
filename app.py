@@ -195,7 +195,7 @@ html, body, .stApp, .stApp p, .stApp li, .stApp label, .stApp button, .stApp inp
 [data-testid="stSidebar"] .block-container{padding-top:1rem;}
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"]{gap:.4rem;}
 /* 직접 넣은 HTML 블록이 아래 요소와 겹치지 않도록 Streamlit의 음수 여백을 없앤다 */
-[data-testid="stMarkdownContainer"]:has(.logo, .side-label, .side-group, .side-empty, .doc-chip, .anchor, .source-note, .recs-label, .sr-head, .followup-label, .fb-title, .fb-done){margin-bottom:0;}
+[data-testid="stMarkdownContainer"]:has(.logo, .side-label, .side-group, .side-empty, .doc-chip, .anchor, .source-note, .recs-label, .sr-head, .followup-label, .fb-title, .fb-done, .opt-sep){margin-bottom:0;}
 .logo{height:26px;margin:2px 0 14px 4px;display:block;}
 .side-label{font-size:11.5px;font-weight:700;letter-spacing:.1em;color:var(--p600);margin:18px 4px 6px;}
 .side-group{font-size:11.5px;color:var(--muted);margin:8px 6px 2px;}
@@ -266,6 +266,7 @@ html, body, .stApp, .stApp p, .stApp li, .stApp label, .stApp button, .stApp inp
 .st-key-settings button{border:none;background:transparent;color:var(--p700);font-size:14px;padding:.4rem .6rem;}
 .st-key-settings button:hover{background:#fff;color:var(--p700);}
 .st-key-settings button [data-testid="stIconMaterial"]{display:none;}
+.opt-sep{border-top:1px solid var(--line);margin:2px 0 0;}
 
 /* ---------- 메인 첫 화면 (html의 center) ---------- */
 .greet{text-align:center;margin:14vh 0 28px;}
@@ -809,8 +810,8 @@ with st.sidebar:
                 key="opt_style",
                 captions=[s["desc"] for s in STYLES.values()],
             )
-            # 서버에 쌓인 피드백 CSV 내려받기
-            st.divider()
+            # 서버에 쌓인 피드백 CSV 내려받기 (st.divider는 위아래 여백이 커서 얇은 구분선으로 대신한다)
+            st.markdown('<div class="opt-sep"></div>', unsafe_allow_html=True)
             if os.path.exists(FEEDBACK_PATH):
                 with open(FEEDBACK_PATH, "rb") as f:
                     fb_bytes = f.read()
