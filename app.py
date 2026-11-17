@@ -605,6 +605,7 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     st.button("＋ 새 대화", key="new_chat", on_click=start_new_chat)
+    st.button("🔍 대화 검색", key="open_search", on_click=open_search)
     st.button("⇪ 문서 업로드", key="open_upload", on_click=open_upload)
 
     st.markdown('<div class="side-label">대화 기록</div>', unsafe_allow_html=True)
@@ -655,8 +656,6 @@ with st.sidebar:
                 key="opt_style",
                 captions=[s["desc"] for s in STYLES.values()],
             )
-
-    st.button("🔍 대화 검색", key="open_search", on_click=open_search)
 
 
 # ---------------------------------------------------------------
