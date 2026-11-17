@@ -266,7 +266,7 @@ html, body, .stApp, .stApp p, .stApp li, .stApp label, .stApp button, .stApp inp
 .st-key-settings button{border:none;background:transparent;color:var(--p700);font-size:14px;padding:.4rem .6rem;}
 .st-key-settings button:hover{background:#fff;color:var(--p700);}
 .st-key-settings button [data-testid="stIconMaterial"]{display:none;}
-.opt-sep{border-top:1px solid var(--line);margin:2px 0 0;}
+.opt-sep{border-top:1px solid #d1d5db;margin:2px 0 0;}
 
 /* ---------- 메인 첫 화면 (html의 center) ---------- */
 .greet{text-align:center;margin:14vh 0 28px;}
