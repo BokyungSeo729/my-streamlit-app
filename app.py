@@ -3,6 +3,7 @@ import os
 import re
 import html
 import json
+import base64
 import time
 import uuid
 import tempfile
@@ -83,6 +84,72 @@ PLAN_RULES = """
 - 검색 자료에 관련 내용이 없어도 "확인할 수 없습니다"로 끝내지 말고 일반적인 학습 계획을 세우세요.
 """
 
+# ---------------------------------------------------------------
+# 에이블메이트 로고·캐릭터 (SVG)
+# ---------------------------------------------------------------
+# 상단 헤드: 나침반 말풍선 로고 (시안 C)
+MARK_COMPASS = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+    '<path d="M32 6a24 24 0 1 1-13.2 44.1L9 56l3.4-11.2A24 24 0 0 1 32 6z" fill="#0d9488"/>'
+    '<circle cx="32" cy="30" r="16" fill="none" stroke="#ffffff" stroke-opacity=".45" stroke-width="2"/>'
+    '<path d="M43 19L35.5 33.5L28.5 26.5Z" fill="#ffffff"/>'
+    '<path d="M21 41L28.5 26.5L35.5 33.5Z" fill="#99f6e4"/>'
+    '<circle cx="32" cy="30" r="2.6" fill="#0f766e"/></svg>'
+)
+
+# 캐릭터 메이트 공통 몸통 (헤드셋 + 머리 + 얼굴 화면)
+_MATE_BODY = (
+    '<line x1="32" y1="13" x2="32" y2="6" stroke="#0f766e" stroke-width="3" stroke-linecap="round"/>'
+    '<rect x="3" y="28" width="7" height="14" rx="3.5" fill="#0f766e"/>'
+    '<rect x="54" y="28" width="7" height="14" rx="3.5" fill="#0f766e"/>'
+    '<rect x="8" y="12" width="48" height="46" rx="18" fill="#0d9488"/>'
+    '<rect x="15" y="21" width="34" height="28" rx="12" fill="#ffffff"/>'
+)
+_STAR = '<path d="M32 .5Q32.9 4.1 36.5 5Q32.9 5.9 32 9.5Q31.1 5.9 27.5 5Q31.1 4.1 32 .5Z" fill="{c}"/>'
+_CHEEKS = '<circle cx="20.5" cy="40" r="2.2" fill="#99f6e4"/><circle cx="43.5" cy="40" r="2.2" fill="#99f6e4"/>'
+_SMILE = '<path d="M27.5 40.5Q32 44.5 36.5 40.5" fill="none" stroke="#12302b" stroke-width="2.4" stroke-linecap="round"/>'
+_HAPPY_EYES = (
+    '<path d="M21.5 35Q25 30 28.5 35" fill="none" stroke="#12302b" stroke-width="2.6" stroke-linecap="round"/>'
+    '<path d="M35.5 35Q39 30 42.5 35" fill="none" stroke="#12302b" stroke-width="2.6" stroke-linecap="round"/>'
+)
+
+
+def _svg(inner):
+    return f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">{inner}</svg>'
+
+
+# 기본 · 안녕하세요 (첫 화면)
+MATE_BASE = _svg(
+    _MATE_BODY + _STAR.format(c="#14b8a6")
+    + '<circle cx="25" cy="34" r="3.2" fill="#12302b"/><circle cx="39" cy="34" r="3.2" fill="#12302b"/>'
+    + _SMILE + _CHEEKS
+)
+# 생각 중 · 찾아볼게요 (답변을 찾고 쓰는 동안)
+MATE_THINK = _svg(
+    _MATE_BODY + _STAR.format(c="#99f6e4")
+    + '<circle cx="49" cy="9" r="1.7" fill="#14b8a6"/><circle cx="54.5" cy="6.5" r="2.1" fill="#14b8a6"/>'
+    + '<circle cx="60.5" cy="4" r="2.5" fill="#14b8a6"/>'
+    + '<circle cx="27" cy="31.5" r="2.8" fill="#12302b"/><circle cx="41" cy="31.5" r="2.8" fill="#12302b"/>'
+    + '<path d="M29 41H35" fill="none" stroke="#12302b" stroke-width="2.4" stroke-linecap="round"/>'
+)
+# 완료 · 다 됐어요 (답변 작성 완료)
+MATE_DONE = _svg(
+    _MATE_BODY + _STAR.format(c="#14b8a6") + _HAPPY_EYES + _SMILE
+    + '<circle cx="52" cy="52" r="9" fill="#2dd4bf" stroke="#ffffff" stroke-width="2"/>'
+    + '<path d="M47.6 52L50.8 55.2L56.4 49" fill="none" stroke="#ffffff" stroke-width="2.6" '
+    + 'stroke-linecap="round" stroke-linejoin="round"/>'
+)
+
+
+def svg_uri(svg):
+    """SVG를 <img>나 채팅 아바타에 바로 쓸 수 있는 data URI로 바꾼다."""
+    return "data:image/svg+xml;base64," + base64.b64encode(svg.encode("utf-8")).decode("ascii")
+
+
+LOGO_HEAD = svg_uri(MARK_COMPASS)
+AVATAR_THINK = svg_uri(MATE_THINK)
+AVATAR_DONE = svg_uri(MATE_DONE)
+
 st.set_page_config(page_title="AIVLE School 학습 도우미", page_icon="✦", layout="wide")
 
 # ---------------------------------------------------------------
@@ -111,8 +178,10 @@ html, body, .stApp, .stApp p, .stApp li, .stApp label, .stApp button, .stApp inp
 .block-container{max-width:820px;padding-top:5.5rem;padding-bottom:6rem;}
 
 /* 상단 제목 */
-.topbar-title{position:fixed;top:0;left:0;right:0;height:3.75rem;display:flex;align-items:center;justify-content:center;
-  font-size:18px;font-weight:800;letter-spacing:-.02em;color:var(--p800);z-index:999990;pointer-events:none;}
+.topbar-title{position:fixed;top:0;left:0;right:0;height:3.75rem;display:flex;align-items:center;justify-content:center;gap:10px;
+  font-size:19px;font-weight:800;letter-spacing:-.02em;color:var(--ink);z-index:999990;pointer-events:none;}
+.topbar-title img{width:30px;height:30px;}
+.topbar-title em{font-style:normal;color:var(--p600);}
 
 /* ---------- 사이드바 (html의 drawer) ---------- */
 [data-testid="stSidebar"]{background:linear-gradient(180deg,#f0fdf9,#dcf8ef);border-right:1px solid var(--p200);
@@ -120,7 +189,7 @@ html, body, .stApp, .stApp p, .stApp li, .stApp label, .stApp button, .stApp inp
 [data-testid="stSidebar"] .block-container{padding-top:1rem;}
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"]{gap:.4rem;}
 /* 직접 넣은 HTML 블록이 아래 요소와 겹치지 않도록 Streamlit의 음수 여백을 없앤다 */
-[data-testid="stMarkdownContainer"]:has(.logo, .side-label, .side-group, .side-empty, .doc-chip, .anchor, .source-note, .recs-label, .sr-head){margin-bottom:0;}
+[data-testid="stMarkdownContainer"]:has(.logo, .side-label, .side-group, .side-empty, .doc-chip, .anchor, .source-note, .recs-label, .sr-head, .followup-label){margin-bottom:0;}
 .logo{height:26px;margin:2px 0 14px 4px;display:block;}
 .side-label{font-size:11.5px;font-weight:700;letter-spacing:.1em;color:var(--p600);margin:18px 4px 6px;}
 .side-group{font-size:11.5px;color:var(--muted);margin:8px 6px 2px;}
@@ -194,8 +263,7 @@ html, body, .stApp, .stApp p, .stApp li, .stApp label, .stApp button, .stApp inp
 
 /* ---------- 메인 첫 화면 (html의 center) ---------- */
 .greet{text-align:center;margin:14vh 0 28px;}
-.greet .orb{width:56px;height:56px;margin:0 auto 18px;border-radius:18px;display:grid;place-items:center;color:#fff;font-size:24px;
-  background:linear-gradient(135deg,var(--p700),var(--p400));box-shadow:0 12px 30px rgba(20,184,166,.3);}
+.greet .mate{width:84px;height:84px;margin:0 auto 14px;display:block;}
 .greet h2{font-size:26px;font-weight:800;letter-spacing:-.02em;color:var(--ink);padding:0;}
 .greet h2 em{font-style:normal;background:linear-gradient(90deg,var(--p700),var(--p400));-webkit-background-clip:text;background-clip:text;color:transparent;}
 .greet p{margin-top:8px;color:var(--muted);font-size:14.5px;}
@@ -211,6 +279,13 @@ html, body, .stApp, .stApp p, .stApp li, .stApp label, .stApp button, .stApp inp
 [data-testid="stChatMessage"]{background:transparent;padding:.6rem 0;}
 [data-testid="stChatMessageAvatarUser"]{background:var(--p100);color:var(--p700);}
 [data-testid="stChatMessageAvatarAssistant"]{background:linear-gradient(135deg,var(--p700),var(--p400));color:#fff;}
+[data-testid="stChatMessageAvatarImage"]{width:2.4rem;height:2.4rem;}
+
+/* 이어서 물어보세요 (누르면 바로 질문) */
+.followup-label{font-size:15px;font-weight:700;color:var(--ink);margin:14px 0 4px;}
+[class*="st-key-fu_"] button{border:1px solid var(--p200);background:#fff;border-radius:999px;color:var(--p800);
+  font-weight:500;font-size:13.5px;padding:.45rem 1rem;min-height:0;text-align:left;}
+[class*="st-key-fu_"] button:hover{background:var(--p100);border-color:var(--p400);color:var(--p800);}
 .source-note{font-size:12.5px;color:var(--muted);border-top:1px dashed var(--p200);margin-top:10px;padding-top:8px;}
 .anchor{height:0;scroll-margin-top:80px;}
 
@@ -239,7 +314,10 @@ html, body, .stApp, .stApp p, .stApp li, .stApp label, .stApp button, .stApp inp
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
-st.markdown('<div class="topbar-title">AIVLE School 학습 도우미</div>', unsafe_allow_html=True)
+st.markdown(
+    f'<div class="topbar-title"><img src="{LOGO_HEAD}" alt=""><span>에이블 <em>메이트</em></span></div>',
+    unsafe_allow_html=True,
+)
 
 
 # ---------------------------------------------------------------
@@ -342,6 +420,24 @@ def clean_stream(chunks):
 
 def is_plan_request(question):
     return bool(PLAN_RE.search(question))
+
+
+def split_followups(text):
+    """답변에서 '💬 이어서 물어보세요' 부분을 떼어 내고, 그 아래 질문들을 목록으로 돌려준다."""
+    m = re.search(r"^[ \t#>*]*💬.*$", text, re.M)
+    if not m:
+        return text, []
+    items = []
+    for line in text[m.end():].splitlines():
+        found = re.match(r"^\s*(?:[-*•]|\d+[.)])\s+(.+)$", line)
+        if found:
+            q = re.sub(r"[*_`\"“”]", "", found.group(1)).strip()
+            if q:
+                items.append(q)
+    if not items:
+        return text, []
+    body = re.sub(r"\n\s*(?:-{3,}|\*{3,}|_{3,})\s*$", "", text[:m.start()].rstrip())
+    return body, items[:3]
 
 
 def plan_markdown(answer, question):
@@ -611,7 +707,7 @@ with st.sidebar:
     st.markdown('<div class="side-label">대화 기록</div>', unsafe_allow_html=True)
     saved = sorted(
         [c for c in st.session_state.chats if c["messages"]],
-        key=lambda c: c.get("updated", ""), reverse=True,
+        key=lambda c: c["updated"], reverse=True,
     )
     if not saved:
         st.markdown('<div class="side-empty">아직 대화가 없어요</div>', unsafe_allow_html=True)
@@ -726,13 +822,21 @@ def inject_scroll_helper(target, scroll_to):
 
 
 def render_message(m):
-    with st.chat_message(m["role"]):
+    # 답변이 끝난 메시지는 '완료 · 다 됐어요' 캐릭터를 아바타로 쓴다
+    avatar = AVATAR_DONE if m["role"] == "assistant" else None
+    with st.chat_message(m["role"], avatar=avatar):
         prefix = "q-" if m["role"] == "user" else "a-"
         st.markdown(f'<div class="anchor" id="{prefix}{m["id"]}"></div>', unsafe_allow_html=True)
         if m["role"] == "user":
             st.markdown(m["content"])
         else:
-            st.markdown(clean_br(m["content"]))
+            body, followups = split_followups(m["content"])
+            st.markdown(clean_br(body))
+            # 후속 질문은 버튼으로: 누르면 그 질문을 바로 보낸다
+            if followups:
+                st.markdown('<div class="followup-label">💬 이어서 물어보세요</div>', unsafe_allow_html=True)
+                for i, q in enumerate(followups):
+                    st.button(q, key=f"fu_{m['id']}_{i}", on_click=ask, args=(q,))
             if st.session_state.opt_source and m.get("sources"):
                 st.markdown(f'<div class="source-note">{m["sources"]}</div>', unsafe_allow_html=True)
             # 학습 계획 답변에는 Markdown 파일 다운로드 버튼을 자동으로 붙인다
@@ -770,9 +874,9 @@ if not chat["messages"] and not pending:
     hero = st.empty()
     with hero.container():
         st.markdown(
-            """
+            f"""
 <div class="greet">
-  <div class="orb">✦</div>
+  <img class="mate" src="{svg_uri(MATE_BASE)}" alt="에이블메이트 캐릭터 메이트">
   <h2>무엇이든 <em>물어보세요</em></h2>
   <p>업로드한 문서를 바탕으로 정확하게 답해 드려요</p>
 </div>
@@ -800,7 +904,8 @@ if user_input:
     qid = uuid.uuid4().hex[:8]
     render_message({"role": "user", "content": user_input, "id": qid})
 
-    with st.chat_message("assistant"):
+    # 답변을 찾고 쓰는 동안에는 '생각 중 · 찾아볼게요' 캐릭터를 보여 준다
+    with st.chat_message("assistant", avatar=AVATAR_THINK):
         st.markdown(f'<div class="anchor" id="a-{qid}"></div>', unsafe_allow_html=True)
         try:
             with st.spinner("문서를 찾아보는 중..."):
