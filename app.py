@@ -1,6 +1,7 @@
 
 import os
 import re
+import html
 import json
 import time
 import uuid
@@ -60,6 +61,28 @@ STYLES = {
     },
 }
 
+# 학습 계획 요청을 알아보는 패턴 (예: "학습 계획 짜줘", "4주 로드맵 만들어줘", "공부 계획표 세워줘")
+PLAN_RE = re.compile(
+    r"(학습|공부|스터디|복습|시험\s*대비)\s*(계획|플랜|로드맵|계획표)"
+    r"|(계획|플랜|로드맵|계획표|일정표|스케줄|시간표|커리큘럼)[^\n]{0,12}(짜|세워|세우|세울|만들|작성|짤|추천)"
+    r"|(짜|세워|만들어|작성해)[^\n]{0,8}(계획|플랜|로드맵|일정표|스케줄|시간표)"
+)
+
+# 학습 계획 요청일 때만 답변 프롬프트에 추가하는 규칙
+PLAN_RULES = """
+[학습 계획 작성 규칙]
+이번 질문은 학습 계획 요청입니다. 답변 스타일과 상관없이 가능한 한 상세하게 작성하세요.
+이 규칙은 [답변 규칙]의 "현재 등록된 문서에서 확인할 수 없습니다" 규칙보다 우선합니다.
+- 맨 위에 '# 📘 (주제) 학습 계획' 제목을 쓰세요.
+- '## 개요'에 학습 목표, 전체 기간, 하루 학습 시간, 대상 수준을 정리하세요. 질문에 기간이나 학습 시간이 없으면 적절히 가정하고 '(가정)'이라고 표시하세요.
+- '## 주차별 계획'에 '주차 | 학습 주제 | 세부 학습 내용 | 실습·과제 | 완료 기준' 열을 가진 표를 쓰세요. 전체 기간이 2주 이하이면 '일차' 단위로 나누세요.
+- 이어서 각 주차(또는 일차)마다 '### N주차 상세' 제목을 쓰고, 요일별(또는 시간대별) 할 일을 구체적인 목록으로 쓰세요.
+- 그 뒤에 '## 하루 학습 루틴 예시', '## 점검과 복습 방법', '## 추천 학습 방법과 자료 유형', '## 성공 팁' 순서로 이어서 쓰세요.
+- 에이블스쿨의 과정, 일정, 과목, 규정처럼 사실에 관한 내용은 검색 자료에 근거해 쓰세요.
+- 학습 순서, 분량, 공부 방법처럼 일반적인 제안은 검색 자료에 없어도 쓸 수 있습니다. 다만 문서에 없는 공식 일정, 날짜, 규정은 만들지 마세요.
+- 검색 자료에 관련 내용이 없어도 "확인할 수 없습니다"로 끝내지 말고 일반적인 학습 계획을 세우세요.
+"""
+
 st.set_page_config(page_title="AIVLE School 학습 도우미", page_icon="✦", layout="wide")
 
 # ---------------------------------------------------------------
@@ -97,7 +120,7 @@ html, body, .stApp, .stApp p, .stApp li, .stApp label, .stApp button, .stApp inp
 [data-testid="stSidebar"] .block-container{padding-top:1rem;}
 [data-testid="stSidebar"] [data-testid="stVerticalBlock"]{gap:.4rem;}
 /* 직접 넣은 HTML 블록이 아래 요소와 겹치지 않도록 Streamlit의 음수 여백을 없앤다 */
-[data-testid="stMarkdownContainer"]:has(.logo, .side-label, .side-group, .side-empty, .doc-chip, .anchor, .source-note, .recs-label){margin-bottom:0;}
+[data-testid="stMarkdownContainer"]:has(.logo, .side-label, .side-group, .side-empty, .doc-chip, .anchor, .source-note, .recs-label, .sr-head){margin-bottom:0;}
 .logo{height:26px;margin:2px 0 14px 4px;display:block;}
 .side-label{font-size:11.5px;font-weight:700;letter-spacing:.1em;color:var(--p600);margin:18px 4px 6px;}
 .side-group{font-size:11.5px;color:var(--muted);margin:8px 6px 2px;}
@@ -111,6 +134,9 @@ html, body, .stApp, .stApp p, .stApp li, .stApp label, .stApp button, .stApp inp
 .st-key-new_chat, .st-key-new_chat div, .st-key-new_chat button,
 .st-key-open_upload, .st-key-open_upload div, .st-key-open_upload button,
 .st-key-clear_all, .st-key-clear_all div, .st-key-clear_all button,
+.st-key-open_search, .st-key-open_search div, .st-key-open_search button,
+[class*="st-key-save_"], [class*="st-key-save_"] div, [class*="st-key-save_"] button,
+[class*="st-key-rm_"], [class*="st-key-rm_"] div, [class*="st-key-rm_"] button,
 .st-key-up_cancel, .st-key-up_cancel div, .st-key-up_cancel button,
 .st-key-up_confirm, .st-key-up_confirm div, .st-key-up_confirm button,
 [class*="st-key-hist_"], [class*="st-key-hist_"] div, [class*="st-key-hist_"] button,
@@ -133,12 +159,27 @@ html, body, .stApp, .stApp p, .stApp li, .stApp label, .stApp button, .stApp inp
 [class*="st-key-hist_"] button p{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 [class*="st-key-hist_"] button:hover{background:rgba(255,255,255,.75);color:var(--ink);}
 [class*="st-key-hist_"] button[kind="primary"]{background:#fff;color:var(--p700);font-weight:600;border:none;box-shadow:0 2px 8px rgba(13,148,136,.08);}
-/* ✕ 삭제: 항목에 마우스를 올렸을 때만 보인다 (html 방식) */
-[class*="st-key-del_"]{opacity:0;transition:.15s;}
-[data-testid="stHorizontalBlock"]:hover [class*="st-key-del_"],
-[class*="st-key-del_"]:focus-within{opacity:1;}
-[class*="st-key-del_"] button{border:none;background:transparent;color:var(--muted);font-size:13px;padding:.2rem .4rem;min-height:0;border-radius:6px;}
-[class*="st-key-del_"] button:hover{background:var(--p100);color:var(--p700);}
+/* ⋯ 메뉴 (채팅방 이름 변경·삭제): 항목에 마우스를 올렸을 때만 보인다 */
+[class*="st-key-menu_"]{opacity:0;transition:.15s;}
+[data-testid="stHorizontalBlock"]:hover [class*="st-key-menu_"],
+[class*="st-key-menu_"]:focus-within{opacity:1;}
+[class*="st-key-menu_"] button{border:none;background:transparent;color:var(--muted);padding:.3rem .2rem;min-height:0;}
+[class*="st-key-menu_"] button:hover{background:var(--p100);color:var(--p700);}
+[class*="st-key-menu_"] button [data-testid="stIconMaterial"]{display:none;}   /* 펼침 화살표 숨김 */
+[class*="st-key-rm_"] button{color:#dc2626;}
+
+/* 대화 검색 버튼·검색 결과 */
+.st-key-open_search button{background:#fff;color:var(--p700);border:1px solid var(--p200);padding:11px;font-size:13.5px;}
+.st-key-open_search button:hover{background:var(--p100);border-color:var(--p400);color:var(--p700);}
+.sr-head{font-size:12.5px;font-weight:700;color:var(--p700);margin-bottom:4px;}
+.sr-snip{font-size:13.5px;color:var(--ink);line-height:1.55;}
+.sr-snip mark{background:var(--p200);color:var(--ink);border-radius:3px;padding:0 2px;}
+[class*="st-key-go_"] button{border:1px solid var(--p200);background:#fff;color:var(--p700);font-size:12.5px;padding:.25rem .7rem;min-height:0;}
+[class*="st-key-go_"] button:hover{background:var(--p100);border-color:var(--p400);color:var(--p700);}
+
+/* 학습 계획 다운로드 버튼 */
+[class*="st-key-dl_"] button{border:1px solid var(--p300);background:var(--p50);color:var(--p700);font-size:13px;margin-top:6px;}
+[class*="st-key-dl_"] button:hover{background:var(--p100);border-color:var(--p500);color:var(--p700);}
 
 /* 사이드바 추천 질문 */
 [class*="st-key-side_rec_"] button{justify-content:flex-start;text-align:left;border:1px solid var(--p200);background:rgba(255,255,255,.7);
@@ -267,6 +308,7 @@ ANSWER_PROMPT = ChatPromptTemplate.from_messages([
 - 표의 셀 안에 <br> 같은 HTML 태그를 쓰지 마세요. 셀 안의 여러 항목은 쉼표로 구분하세요.
 - 답변 전체를 ```markdown 같은 코드블록으로 감싸지 마세요.
 - 근거가 있는 답변이라면 마지막에 '💬 이어서 물어보세요' 제목 아래 관련 후속 질문 2개를 목록으로 제안하세요. 확인할 수 없다는 답변에는 붙이지 마세요.
+{plan_rules}
 """),
     MessagesPlaceholder("history"),
     ("human", "검색 자료:\n{context}\n\n현재 질문: {input}"),
@@ -296,6 +338,18 @@ def clean_stream(chunks):
             yield out
     if buf:
         yield clean_br(buf)
+
+
+def is_plan_request(question):
+    return bool(PLAN_RE.search(question))
+
+
+def plan_markdown(answer, question):
+    """학습 계획 답변을 내려받을 Markdown 파일 내용으로 만든다 (후속 질문 제안은 뺀다)."""
+    body = answer.split("💬")[0]
+    body = re.sub(r"[\s#*>]+$", "", body)
+    footer = f"\n\n---\n\n- 요청: {question}\n- 작성: AIVLE School 학습 도우미 · {datetime.now():%Y-%m-%d %H:%M}\n"
+    return body + footer
 
 
 def to_messages(messages):
@@ -407,18 +461,17 @@ def upload_dialog():
 
 # ---------------------------------------------------------------
 # 대화 상태 관리
-# - 대화(chat): 새 대화를 누를 때마다 하나씩 생기며, 이전 대화 맥락의 단위
-# - 사이드바 대화 기록: 질문 하나마다 항목 하나 (누르면 그 질문 위치로 이동)
+# - 채팅방(chat): '새 대화'를 누르기 전까지의 모든 질문·답변이 한 채팅방에 쌓인다
+# - 사이드바 대화 기록: 채팅방 하나마다 항목 하나 (⋯ 메뉴로 이름 변경·삭제)
 # ---------------------------------------------------------------
 def new_chat_obj():
-    return {"id": uuid.uuid4().hex[:8], "messages": []}
+    return {"id": uuid.uuid4().hex[:8], "title": "새 대화", "messages": [], "updated": time.time()}
 
 
 if "chats" not in st.session_state:
     first = new_chat_obj()
     st.session_state.chats = [first]
     st.session_state.current = first["id"]
-st.session_state.setdefault("focus", None)            # 사이드바에서 선택된 질문 id
 st.session_state.setdefault("opt_source", True)       # 답변 출처 표시
 st.session_state.setdefault("opt_style", "친절한 선배")  # 답변 스타일
 
@@ -432,7 +485,6 @@ def current_chat():
 
 
 def start_new_chat():
-    st.session_state.focus = None
     # 이미 빈 대화가 있으면 새로 만들지 않고 그 대화로 이동
     for c in st.session_state.chats:
         if not c["messages"]:
@@ -443,33 +495,30 @@ def start_new_chat():
     st.session_state.current = chat["id"]
 
 
-def select_question(chat_id, qid):
+def select_chat(chat_id):
     st.session_state.current = chat_id
-    st.session_state.focus = qid
-    st.session_state.scroll_to = "q-" + qid
 
 
-def delete_question(chat_id, qid):
-    """질문과 그 답변을 함께 지운다. 비게 된 대화는 목록에서 뺀다."""
-    for c in st.session_state.chats:
-        if c["id"] == chat_id:
-            c["messages"] = [m for m in c["messages"] if m.get("id") != qid]
-    st.session_state.chats = [
-        c for c in st.session_state.chats
-        if c["messages"] or c["id"] == st.session_state.current
-    ]
+def delete_chat(chat_id):
+    st.session_state.chats = [c for c in st.session_state.chats if c["id"] != chat_id]
     if not st.session_state.chats:
         st.session_state.chats = [new_chat_obj()]
+    if st.session_state.current == chat_id:
         st.session_state.current = st.session_state.chats[0]["id"]
-    if st.session_state.focus == qid:
-        st.session_state.focus = None
+
+
+def rename_chat(chat_id):
+    new_title = st.session_state.get("ren_" + chat_id, "").strip()
+    if new_title:
+        for c in st.session_state.chats:
+            if c["id"] == chat_id:
+                c["title"] = new_title[:30]
 
 
 def clear_all():
     chat = new_chat_obj()
     st.session_state.chats = [chat]
     st.session_state.current = chat["id"]
-    st.session_state.focus = None
 
 
 def ask(question):
@@ -489,22 +538,62 @@ def group_label(ts):
     return "이전"
 
 
-def question_items():
-    """모든 대화의 질문을 최신순으로 모은다."""
-    items = []
-    for c in st.session_state.chats:
+def open_search():
+    st.session_state.show_search = True
+
+
+def search_chats(query, limit=30):
+    """모든 채팅방의 질문·답변에서 검색어를 찾아 (채팅방, 메시지, 미리보기 HTML) 목록을 돌려준다."""
+    q = query.lower()
+    results = []
+    for c in sorted(st.session_state.chats, key=lambda c: c["updated"], reverse=True):
         for m in c["messages"]:
-            if m["role"] == "user":
-                items.append((m["ts"], c["id"], m["id"], m["content"]))
-    items.sort(reverse=True)
-    return items
+            text = m["content"]
+            idx = text.lower().find(q)
+            if idx == -1:
+                continue
+            start, end = max(0, idx - 30), min(len(text), idx + len(query) + 60)
+            snippet = (
+                ("…" if start > 0 else "")
+                + html.escape(text[start:idx])
+                + "<mark>" + html.escape(text[idx:idx + len(query)]) + "</mark>"
+                + html.escape(text[idx + len(query):end])
+                + ("…" if end < len(text) else "")
+            ).replace("\n", " ")
+            results.append((c, m, snippet))
+            if len(results) >= limit:
+                return results
+    return results
+
+
+@st.dialog("대화 검색")
+def search_dialog():
+    query = st.text_input(
+        "검색어", key="search_q", placeholder="대화 기록에서 찾을 내용을 입력하고 Enter를 누르세요",
+        label_visibility="collapsed",
+    ).strip()
+    if not query:
+        st.caption("모든 채팅방의 질문과 답변에서 검색합니다.")
+        return
+    results = search_chats(query)
+    if not results:
+        st.info("일치하는 대화가 없어요.")
+        return
+    st.caption(f"검색 결과 {len(results)}건")
+    for i, (c, m, snippet) in enumerate(results):
+        kind = "질문" if m["role"] == "user" else "답변"
+        with st.container(key=f"sr_{i}", border=True):
+            st.markdown(
+                f'<div class="sr-head">{html.escape(c["title"])} · {kind}</div><div class="sr-snip">{snippet}</div>',
+                unsafe_allow_html=True,
+            )
+            if st.button("이 대화로 이동", key=f"go_{i}"):
+                st.session_state.current = c["id"]
+                st.session_state.scroll_to = ("q-" if m["role"] == "user" else "a-") + m["id"]
+                st.rerun()
 
 
 chat = current_chat()
-
-# 강조할 대화 기록 항목: 선택한 질문, 없으면 현재 대화의 마지막 질문
-current_qids = [m["id"] for m in chat["messages"] if m["role"] == "user"]
-active_qid = st.session_state.focus if st.session_state.focus in current_qids else (current_qids[-1] if current_qids else None)
 
 
 # ---------------------------------------------------------------
@@ -519,22 +608,28 @@ with st.sidebar:
     st.button("⇪ 문서 업로드", key="open_upload", on_click=open_upload)
 
     st.markdown('<div class="side-label">대화 기록</div>', unsafe_allow_html=True)
-    items = question_items()
-    if not items:
+    saved = sorted(
+        [c for c in st.session_state.chats if c["messages"]],
+        key=lambda c: c["updated"], reverse=True,
+    )
+    if not saved:
         st.markdown('<div class="side-empty">아직 대화가 없어요</div>', unsafe_allow_html=True)
     last_group = None
-    for ts, cid, qid, text in items:
-        group = group_label(ts)
+    for c in saved:
+        group = group_label(c["updated"])
         if group != last_group:
             st.markdown(f'<div class="side-group">{group}</div>', unsafe_allow_html=True)
             last_group = group
-        label = text if len(text) <= 24 else text[:24] + "…"
-        col_t, col_x = st.columns([7, 1], gap="small", vertical_alignment="center")
+        col_t, col_m = st.columns([7, 1], gap="small", vertical_alignment="center")
         col_t.button(
-            label, key="hist_" + qid, on_click=select_question, args=(cid, qid),
-            type="primary" if qid == active_qid else "secondary",
+            c["title"], key="hist_" + c["id"], on_click=select_chat, args=(c["id"],),
+            type="primary" if c["id"] == st.session_state.current else "secondary",
         )
-        col_x.button("✕", key="del_" + qid, on_click=delete_question, args=(cid, qid))
+        with col_m.container(key="menu_" + c["id"]):
+            with st.popover("⋯"):
+                st.text_input("채팅방 이름", value=c["title"], key="ren_" + c["id"], max_chars=30)
+                st.button("이름 변경", key="save_" + c["id"], on_click=rename_chat, args=(c["id"],))
+                st.button("채팅방 삭제", key="rm_" + c["id"], on_click=delete_chat, args=(c["id"],))
 
     st.markdown('<div class="side-label">등록된 문서</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="doc-chip"><b>기본</b><span>{BASE_NAME}</span></div>', unsafe_allow_html=True)
@@ -560,6 +655,8 @@ with st.sidebar:
                 key="opt_style",
                 captions=[s["desc"] for s in STYLES.values()],
             )
+
+    st.button("🔍 대화 검색", key="open_search", on_click=open_search)
 
 
 # ---------------------------------------------------------------
@@ -639,6 +736,15 @@ def render_message(m):
             st.markdown(clean_br(m["content"]))
             if st.session_state.opt_source and m.get("sources"):
                 st.markdown(f'<div class="source-note">{m["sources"]}</div>', unsafe_allow_html=True)
+            # 학습 계획 답변에는 Markdown 파일 다운로드 버튼을 자동으로 붙인다
+            if m.get("plan_md"):
+                st.download_button(
+                    "⬇ 학습 계획 다운로드 (.md)",
+                    data=m["plan_md"].encode("utf-8"),
+                    file_name=m["plan_file"],
+                    mime="text/markdown",
+                    key="dl_" + m["id"],
+                )
 
 
 def rec_row():
@@ -654,6 +760,8 @@ def rec_row():
 # ---------------------------------------------------------------
 if st.session_state.pop("show_upload", False):
     upload_dialog()
+if st.session_state.pop("show_search", False):
+    search_dialog()
 
 pending = st.session_state.pop("pending", None)
 user_input = None
@@ -689,6 +797,7 @@ else:
 
 if user_input:
     history = to_messages(chat["messages"])    # 이번 질문 이전의 대화
+    plan = is_plan_request(user_input)          # 학습 계획 요청인지 확인
     qid = uuid.uuid4().hex[:8]
     render_message({"role": "user", "content": user_input, "id": qid})
 
@@ -702,6 +811,7 @@ if user_input:
                 "history": history,
                 "context": format_docs(docs),
                 "style": STYLES[st.session_state.opt_style]["prompt"],
+                "plan_rules": PLAN_RULES if plan else "",
             })
             answer = st.write_stream(clean_stream(stream))
         except Exception as e:
@@ -710,10 +820,18 @@ if user_input:
 
     # 답변 생성이 성공한 뒤에만 대화를 저장한다.
     sources = "" if "확인할 수 없" in answer else source_text(docs)
-    chat["messages"].append({"role": "user", "content": user_input, "id": qid, "ts": time.time()})
-    chat["messages"].append({"role": "assistant", "content": answer, "sources": sources, "id": qid})
-    st.session_state.focus = qid
-    st.rerun()   # 사이드바의 대화 기록·추천 질문·출처 표시를 갱신
+    now = time.time()
+    if not chat["messages"] and chat["title"] == "새 대화":
+        # 채팅방 이름은 첫 질문으로 정한다 (⋯ 메뉴에서 바꿀 수 있음)
+        chat["title"] = user_input[:20] + ("…" if len(user_input) > 20 else "")
+    chat["messages"].append({"role": "user", "content": user_input, "id": qid, "ts": now})
+    assistant_msg = {"role": "assistant", "content": answer, "sources": sources, "id": qid}
+    if plan and "확인할 수 없" not in answer:
+        assistant_msg["plan_md"] = plan_markdown(answer, user_input)
+        assistant_msg["plan_file"] = f"학습계획_{datetime.now():%Y%m%d_%H%M}.md"
+    chat["messages"].append(assistant_msg)
+    chat["updated"] = now
+    st.rerun()   # 사이드바의 대화 기록·추천 질문·다운로드 버튼을 갱신
 
 # 가장 최근 답변을 화살표 버튼의 목적지로 지정
 last_answer = next((m["id"] for m in reversed(chat["messages"]) if m["role"] == "assistant"), "")
